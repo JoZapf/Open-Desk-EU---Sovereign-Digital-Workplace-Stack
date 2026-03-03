@@ -11,3 +11,6 @@ data/
 
 # Runbook contains secret values from terminal sessions
 RUNBOOK*
+
+# Archive - needs review before publishing
+archive/
