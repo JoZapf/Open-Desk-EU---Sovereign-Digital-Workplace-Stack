@@ -1,0 +1,45 @@
+services:
+  traefik:
+    image: traefik:v3.6
+    container_name: opendesk_traefik
+    restart: unless-stopped
+    user: "1000:984"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - DOCKER_API_VERSION=1.44
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    ports:
+      - "192.168.10.20:8443:8443"
+      - "127.0.0.1:8890:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - /mnt/docker-data/opendesk/logs/traefik:/var/log/traefik
+    tmpfs:
+      - /tmp
+    networks:
+      - opendesk_frontend
+      - opendesk_backend
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "traefik.enable=false"
+
+networks:
+  opendesk_frontend:
+    external: true
+  opendesk_backend:
+    external: true

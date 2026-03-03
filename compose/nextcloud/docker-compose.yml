@@ -1,0 +1,185 @@
+name: opendesk-nextcloud
+
+services:
+  nextcloud-db:
+    image: mariadb:11-jammy
+    container_name: opendesk_nextcloud_db
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
+    environment:
+      MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb_root_password
+      MARIADB_DATABASE: nextcloud
+      MARIADB_USER: nextcloud
+      MARIADB_PASSWORD_FILE: /run/secrets/mariadb_nextcloud_password
+    secrets:
+      - mariadb_root_password
+      - mariadb_nextcloud_password
+    volumes:
+      - /mnt/docker-data/opendesk/mariadb:/var/lib/mysql
+    networks:
+      - opendesk_db
+    healthcheck:
+      test: ["CMD-SHELL", "healthcheck.sh --connect --innodb_initialized"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  nextcloud-redis:
+    image: redis:7-alpine
+    container_name: opendesk_nextcloud_redis
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        REDIS_PASS=$(cat /run/secrets/redis_nextcloud_password)
+        exec redis-server --requirepass "$REDIS_PASS" --save "" --appendonly no
+    secrets:
+      - redis_nextcloud_password
+    tmpfs:
+      - /data
+    networks:
+      - opendesk_db
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$(cat /run/secrets/redis_nextcloud_password)\" ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  nextcloud:
+    image: nextcloud:30-apache
+    container_name: opendesk_nextcloud
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+      - NET_BIND_SERVICE
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          cpus: '1.0'
+    environment:
+      MYSQL_HOST: nextcloud-db
+      MYSQL_DATABASE: nextcloud
+      MYSQL_USER: nextcloud
+      MYSQL_PASSWORD_FILE: /run/secrets/mariadb_nextcloud_password
+      REDIS_HOST: nextcloud-redis
+      NEXTCLOUD_TRUSTED_DOMAINS: "cloud.sine-math.com"
+      OVERWRITEPROTOCOL: https
+      OVERWRITEHOST: cloud.sine-math.com
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/nextcloud_admin_password
+    secrets:
+      - mariadb_nextcloud_password
+      - mariadb_root_password
+      - oidc_nextcloud_secret
+      - redis_nextcloud_password
+      - nextcloud_admin_password
+    extra_hosts:
+      - "id.sine-math.com:172.31.1.3"
+    volumes:
+      - /mnt/docker-data/opendesk/nextcloud:/var/www/html
+    networks:
+      - opendesk_db
+      - opendesk_frontend
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "php /var/www/html/occ status --output=json | grep -q installed..true"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud.rule=Host(`cloud.sine-math.com`)"
+      - "traefik.http.routers.nextcloud.entrypoints=websecure"
+      - "traefik.http.routers.nextcloud.middlewares=default-chain@file,nextcloud-redirects@file"
+      - "traefik.http.services.nextcloud.loadbalancer.server.port=80"
+
+  nextcloud-cron:
+    image: nextcloud:30-apache
+    container_name: opendesk_nextcloud_cron
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETUID
+      - SETGID
+      - DAC_READ_SEARCH
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    entrypoint: /cron.sh
+    volumes:
+      - /mnt/docker-data/opendesk/nextcloud:/var/www/html
+    networks:
+      - opendesk_db
+    depends_on:
+      nextcloud-db:
+        condition: service_healthy
+      nextcloud-redis:
+        condition: service_healthy
+
+secrets:
+  mariadb_root_password:
+    file: ../../secrets/mariadb_root_password
+  mariadb_nextcloud_password:
+    file: ../../secrets/mariadb_nextcloud_password
+  oidc_nextcloud_secret:
+    file: ../../secrets/oidc_nextcloud_secret
+  redis_nextcloud_password:
+    file: ../../secrets/redis_nextcloud_password
+  nextcloud_admin_password:
+    file: ../../secrets/nextcloud_admin_password
+
+networks:
+  opendesk_frontend:
+    external: true
+  opendesk_db:
+    external: true

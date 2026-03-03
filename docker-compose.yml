@@ -1,0 +1,14 @@
+# Open-Desk EU — Root Orchestrator
+# Networks are created externally (docker network create), referenced here
+
+networks:
+  opendesk_frontend:
+    external: true
+  opendesk_backend:
+    external: true
+  opendesk_db:
+    external: true
+  opendesk_mail:
+    external: true
+  opendesk_wopi:
+    external: true

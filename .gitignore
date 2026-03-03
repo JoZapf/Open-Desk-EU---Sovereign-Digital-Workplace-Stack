@@ -1,0 +1,13 @@
+# Secrets — never commit
+secrets/
+
+# Environment files with credentials
+*.env
+.env.*
+
+# Data directory (lives on /mnt/docker-data/opendesk/)
+# Not in this repo, but just in case
+data/
+
+# Runbook contains secret values from terminal sessions
+RUNBOOK*

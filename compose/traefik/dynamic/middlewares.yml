@@ -1,0 +1,32 @@
+http:
+  middlewares:
+    security-headers:
+      headers:
+        frameDeny: true
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+
+    rate-limit:
+      rateLimit:
+        average: 100
+        burst: 200
+        period: "1s"
+
+    default-chain:
+      chain:
+        middlewares:
+          - security-headers
+          - rate-limit
+
+    nextcloud-redirects:
+      redirectRegex:
+        regex: "https://(.*)/.well-known/(?:card|cal)dav"
+        replacement: "https://${1}/remote.php/dav"
+        permanent: true
