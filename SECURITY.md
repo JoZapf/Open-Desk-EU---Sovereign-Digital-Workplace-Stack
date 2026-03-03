@@ -1,274 +1,220 @@
-# Sicherheitsstruktur Open-Desk EU
+# Security Architecture — Open-Desk EU
 
-**Stand:** 2026-03-03  
-**Host:** CREA-think (192.168.10.20), Ubuntu Server  
-**Projekt:** Open-Desk EU — Containerized Office Suite  
-**Verantwortlich:** Jo Zapf
+**Last updated:** 2026-03-03  
+**Project:** Open-Desk EU — Sovereign Digital Workplace Stack
 
 ---
 
-## 1. Sicherheitsphilosophie
+## 1. Security Philosophy
 
-Das Projekt folgt dem Zero-Trust-Ansatz mit Defense-in-Depth-Strategie. Jede Schicht — Host, Netzwerk, Container, Applikation — implementiert eigene Sicherheitsmaßnahmen, sodass der Ausfall einer Schicht nicht zum Gesamtversagen führt.
+This project follows a Zero Trust approach with Defense-in-Depth strategy. Each layer — host, network, container, application — implements its own security controls, ensuring that a failure in one layer does not compromise the entire system.
 
-Leitprinzipien:
+Core principles:
 
-- **Least Privilege:** Container erhalten nur die minimal notwendigen Linux-Capabilities
-- **Network Segmentation:** Isolierte Docker-Netzwerke mit definierten Kommunikationspfaden
-- **Secrets as Files:** Keine Credentials in Compose-Dateien oder Umgebungsvariablen im Klartext
-- **Immutable Infrastructure:** Read-Only-Dateisysteme wo möglich, explizite tmpfs für Laufzeitdaten
-- **Audit Trail:** auditd überwacht Docker Socket und Daemon-Konfiguration
+- **Least Privilege:** Containers receive only the minimum required Linux capabilities
+- **Network Segmentation:** Isolated Docker networks with defined communication paths
+- **Secrets as Files:** No credentials in compose files or plaintext environment variables
+- **Immutable Infrastructure:** Read-only filesystems where possible, explicit tmpfs for runtime data
+- **Audit Trail:** auditd monitors Docker socket and daemon configuration changes
 
 ---
 
-## 2. Host-Sicherheit (CREA-think)
+## 2. Host Security
 
-### 2.1 Firewall (UFW)
+### 2.1 Firewall
 
-Default Policy: **deny (eingehend), allow (abgehend), deny (geroutet)**
+Default policy: **deny (incoming), allow (outgoing), deny (routed)**
 
-Geöffnete Ports sind auf `192.168.10.0/24` beschränkt (LAN-only), mit Ausnahme von Port 443 (HTTPS, weltweit) und Samba (Anywhere — wird bei Hardening geprüft).
+Open ports are restricted to the local network (LAN-only), with the exception of port 443 (HTTPS).
 
 ### 2.2 Docker Daemon
 
-Globale Sicherheitskonfiguration in `/etc/docker/daemon.json`:
+Global `no-new-privileges` enforcement via daemon configuration prevents privilege escalation via `setuid`/`setgid` binaries across all containers. Each container additionally sets this flag explicitly as Defense in Depth.
 
-```json
-{
-  "ipv6": false,
-  "fixed-cidr-v6": "fd00::/80",
-  "no-new-privileges": true
-}
-```
+**Architecture Decision (ADR-06):** `userns-remap` was deliberately not implemented. Rationale: incompatibility with existing bind mounts and volume permissions, increased complexity for secret file access, and marginal security gain given the already implemented `cap_drop: ALL` + `no-new-privileges`.
 
-`no-new-privileges: true` gilt global für alle Container — verhindert Privilege Escalation via `setuid`/`setgid`-Binaries. Zusätzlich setzt jeder Container `security_opt: [no-new-privileges:true]` explizit als Defense in Depth.
+### 2.3 Audit Monitoring
 
-**Architekturentscheidung (ADR-06):** `userns-remap` wurde bewusst nicht implementiert. Begründung: Inkompatibilität mit bestehenden Bind-Mounts und Volume-Permissions, erhöhte Komplexität bei Secret-File-Zugriff, und marginaler Sicherheitsgewinn bei bereits implementiertem `cap_drop: ALL` + `no-new-privileges`.
-
-### 2.3 Audit-Monitoring
-
-auditd überwacht sicherheitskritische Docker-Dateien:
-
-```
--w /var/run/docker.sock -p rwxa -k docker-socket
--w /etc/docker/daemon.json -p rwxa -k docker-config
-```
+auditd monitors security-critical Docker files (socket and daemon configuration) for read, write, execute, and attribute changes.
 
 ---
 
-## 3. Netzwerkarchitektur
+## 3. Network Architecture
 
-### 3.1 Docker-Netzwerke
+### 3.1 Docker Networks
 
-Fünf isolierte Bridge-Netzwerke mit festen Subnetzen:
+Five isolated bridge networks with fixed subnets:
 
-| Netzwerk | Subnet | Internal | Zweck |
-|---|---|---|---|
-| `opendesk_frontend` | 172.31.1.0/24 | Nein | Traefik ↔ Services (HTTP-Routing) |
-| `opendesk_backend` | 172.31.2.0/24 | Nein | Service-zu-Service (OIDC Backchannel) |
-| `opendesk_db` | 172.31.3.0/24 | **Ja** | Datenbank-Zugriff (kein Internet) |
-| `opendesk_mail` | 172.31.4.0/24 | Nein | E-Mail-Versand (zukünftig) |
-| `opendesk_wopi` | 172.31.5.0/24 | **Ja** | Collabora ↔ Nextcloud (kein Internet) |
+| Network | Internal | Purpose |
+|---|---|---|
+| Frontend | No | Reverse proxy ↔ services (HTTP routing) |
+| Backend | No | Service-to-service communication (OIDC backchannel) |
+| Database | **Yes** | Database access (no internet connectivity) |
+| Mail | No | Email delivery (planned) |
+| WOPI | **Yes** | Collabora ↔ Nextcloud (no internet connectivity) |
 
-`internal: true` bedeutet: Container in diesem Netzwerk haben keinen Zugang zum Internet und sind von außen nicht erreichbar. Nur Container, die explizit an das gleiche Netzwerk angeschlossen sind, können kommunizieren.
+`internal: true` means containers in this network have no internet access and are unreachable from outside. Only containers explicitly attached to the same network can communicate.
 
-### 3.2 Container-Netzwerkzuordnung
+### 3.2 Container Network Assignment
 
-| Container | frontend | backend | db | Begründung |
+| Container | Frontend | Backend | Database | Rationale |
 |---|---|---|---|---|
-| Traefik | ✅ | ✅ | — | Reverse Proxy, muss alle Services erreichen |
-| Keycloak | ✅ | ✅ | ✅ | Braucht Frontend (Traefik), Backend (OIDC) und DB |
-| Keycloak DB | — | — | ✅ | Nur Datenbank-Zugriff |
-| Nextcloud | ✅ | — | ✅ | Frontend (Traefik) und DB, Backend-Zugriff über extra_hosts |
-| Nextcloud DB | — | — | ✅ | Nur Datenbank-Zugriff |
-| Nextcloud Redis | — | — | ✅ | Nur Cache-Zugriff aus DB-Netzwerk |
-| Nextcloud Cron | — | — | ✅ | Hintergrund-Jobs, DB-Zugriff |
+| Traefik | ✅ | ✅ | — | Reverse proxy, must reach all services |
+| Keycloak | ✅ | ✅ | ✅ | Needs frontend (routing), backend (OIDC), and DB |
+| Keycloak DB | — | — | ✅ | Database access only |
+| Nextcloud | ✅ | — | ✅ | Frontend (routing) and DB access |
+| Nextcloud DB | — | — | ✅ | Database access only |
+| Nextcloud Redis | — | — | ✅ | Cache access from database network only |
+| Nextcloud Cron | — | — | ✅ | Background jobs, DB access |
 
-### 3.3 Ingress-Architektur
+### 3.3 Ingress Architecture
 
 ```
-Internet → nginx (Host, Port 80/443) → 127.0.0.1:8443 → Traefik → Container
+Internet → nginx (TLS termination) → Traefik (host-based routing) → Service containers
 ```
 
-Traefik ist ausschließlich auf `127.0.0.1` gebunden — kein direkter Zugriff von außen möglich. nginx auf dem Host terminiert TLS (zukünftig via Let's Encrypt) und leitet an Traefik weiter. Traefik routet anhand von Host-Headern zu den einzelnen Services.
+Traefik binds exclusively to the loopback interface — no direct access from outside is possible. nginx terminates TLS and forwards traffic to Traefik. Traefik routes based on Host headers to individual services.
 
 ---
 
-## 4. Container-Hardening-Baseline
+## 4. Container Hardening Baseline
 
-### 4.1 Prüfergebnis (2026-03-03)
+### 4.1 Audit Results (2026-03-03)
 
-Alle 7 Container wurden per `docker inspect` gegen die Hardening-Baseline geprüft:
+All 7 containers were audited via `docker inspect` against the hardening baseline:
 
-| Container | NoNewPrivs | CapDrop ALL | CapAdd (Minimum) | ReadOnly | Memory | CPUs | Restart |
+| Container | NoNewPrivs | CapDrop ALL | Minimal CapAdd | ReadOnly | Memory Limit | CPU Limit | Restart Policy |
 |---|---|---|---|---|---|---|---|
-| opendesk_traefik | ✅ | ✅ | — (keine) | ✅ | 256 MB | 0.5 | unless-stopped |
-| opendesk_keycloak | ✅ | ✅ | DAC_READ_SEARCH | ❌ | 1024 MB | 1.0 | unless-stopped |
-| opendesk_keycloak_db | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | 256 MB | 0.5 | unless-stopped |
-| opendesk_nextcloud | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH, NET_BIND_SERVICE | ❌ | 1024 MB | 1.0 | unless-stopped |
-| opendesk_nextcloud_db | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | 512 MB | 0.5 | unless-stopped |
-| opendesk_nextcloud_redis | ✅ | ✅ | DAC_READ_SEARCH | ✅ | 128 MB | 0.25 | unless-stopped |
-| opendesk_nextcloud_cron | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | 256 MB | 0.25 | unless-stopped |
+| Traefik | ✅ | ✅ | None | ✅ | ✅ | ✅ | unless-stopped |
+| Keycloak | ✅ | ✅ | DAC_READ_SEARCH | ❌ | ✅ | ✅ | unless-stopped |
+| Keycloak DB | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ | ✅ | unless-stopped |
+| Nextcloud | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH, NET_BIND_SERVICE | ❌ | ✅ | ✅ | unless-stopped |
+| Nextcloud DB | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ | ✅ | unless-stopped |
+| Nextcloud Redis | ✅ | ✅ | DAC_READ_SEARCH | ✅ | ✅ | ✅ | unless-stopped |
+| Nextcloud Cron | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ | ✅ | unless-stopped |
 
-### 4.2 Bewertung
+### 4.2 Assessment
 
-**100% Compliance** auf den kritischen Maßnahmen: `no-new-privileges`, `cap_drop: ALL`, Memory/CPU-Limits, Restart-Policy.
+**100% compliance** on critical controls: `no-new-privileges`, `cap_drop: ALL`, memory/CPU limits, restart policy.
 
-**ReadOnly-Filesystem:** Traefik und Redis laufen mit `read_only: true` — Gold-Standard. Datenbanken, Keycloak (Java) und Nextcloud (Apache/PHP) benötigen Schreibzugriff auf das Dateisystem und sind daher dokumentierte Ausnahmen gemäß CONTAINER_HARDENING_BASELINE.md (US-005).
+**Read-only filesystem:** Traefik and Redis run with `read_only: true` — gold standard. Databases, Keycloak (Java), and Nextcloud (Apache/PHP) require filesystem write access and are documented exceptions per the hardening baseline.
 
-**Capabilities:** Jeder Container erhält nur die minimal notwendigen Capabilities. `cap_drop: ALL` entfernt zunächst alle Linux-Capabilities; `cap_add` gibt gezielt nur die zurück, die der jeweilige Prozess benötigt (z.B. `CHOWN`/`FOWNER` für Datenbank-Entrypoints, `NET_BIND_SERVICE` für Apache auf Port 80).
-
----
-
-## 5. Secrets-Management
-
-### 5.1 Architektur
-
-Secrets werden als Dateien auf dem Host gespeichert und über Docker Compose `secrets:` Block in die Container gemountet unter `/run/secrets/`. Kein Secret steht als Umgebungsvariable im Klartext in Compose-Dateien.
-
-```
-~/docker/opendesk/secrets/          ← Host-Verzeichnis (chmod 700)
-├── forwardauth_secret              ← chmod 600, Eigentümer jo:jo
-├── keycloak_admin_password
-├── mariadb_nextcloud_password
-├── mariadb_root_password
-├── mongodb_rocketchat_password
-├── mongodb_root_password
-├── nextcloud_admin_password        ← NEU (2026-03-03), getrennt von DB-Root
-├── oidc_forwardauth_secret
-├── oidc_nextcloud_secret
-├── oidc_openproject_secret
-├── oidc_rocketchat_secret
-├── oidc_vaultwarden_secret
-├── postgres_keycloak_password
-├── postgres_openproject_password
-├── redis_nextcloud_password        ← NEU (2026-03-03), ersetzt hardcoded
-├── ROTATION.md
-└── vaultwarden_admin_token
-```
-
-### 5.2 Secret-Zugriff im Container
-
-Secrets im Container gehören `1000:1000` (Host-User jo) mit Permissions `600`. Nur root kann sie im Container lesen.
-
-**Designentscheidung:** Das ist korrekt so. Der Container-Entrypoint läuft als root, liest die `_FILE`-Variablen und schreibt die Werte in die jeweilige Applikationskonfiguration (z.B. `config.php`, Datenbank). Der Applikations-User (z.B. www-data, UID 33) greift zur Laufzeit nur auf die Konfigurationsdatei zu, nie direkt auf Secret-Dateien.
-
-Für Services die `_FILE`-Suffixe nicht nativ unterstützen (Keycloak, Redis), wird ein Shell-Wrapper als Entrypoint verwendet:
-
-```yaml
-entrypoint: ["/bin/sh", "-c"]
-command:
-  - |
-    SECRET=$(cat /run/secrets/secret_file)
-    exec service-binary --password "$SECRET"
-```
-
-### 5.3 Git-Sicherheit
-
-Die `.gitignore` schließt alle sensiblen Pfade aus:
-
-```
-secrets/
-*.env
-.env.*
-RUNBOOK*
-```
-
-Das Runbook enthält Terminal-Ausgaben mit sichtbaren Secret-Werten und wird bewusst nicht versioniert.
-
-### 5.4 Nextcloud config.php — Risikobewertung
-
-Nextcloud speichert `dbpassword`, `secret`, `passwordsalt` und `redis.password` im Klartext in `/var/www/html/config/config.php`. Diese Datei liegt auf dem Docker-Volume unter `/mnt/docker-data/opendesk/nextcloud/config/` und ist nur für root und www-data lesbar.
-
-**Bewertung: Akzeptables Restrisiko.** Nextcloud bietet keinen Mechanismus, diese Werte zur Laufzeit aus Dateien zu lesen. Alle produktiven Nextcloud-Installationen leben mit diesem Zustand. Die Absicherung erfolgt über Volume-Permissions und die Tatsache, dass das Datenbank-Netzwerk (`opendesk_db`) als `internal: true` konfiguriert ist — selbst bei Kenntnis des DB-Passworts ist die Datenbank von außen nicht erreichbar.
+**Capabilities:** Each container receives only the minimum required capabilities. `cap_drop: ALL` removes all Linux capabilities first; `cap_add` selectively restores only those needed by the respective process (e.g., `CHOWN`/`FOWNER` for database entrypoints, `NET_BIND_SERVICE` for Apache on port 80).
 
 ---
 
-## 6. Secrets — Rotation vor Production
+## 5. Secrets Management
 
-Folgende Secrets waren während der Entwicklungsphase in Terminal-Sessions oder Chat-Protokollen sichtbar und **müssen vor Production-Go-Live rotiert werden**:
+### 5.1 Architecture
 
-| Secret | Aktueller Speicherort | Expositionsgrund | Rotationsprozedur |
-|---|---|---|---|
-| OIDC Nextcloud Client Secret | `secrets/oidc_nextcloud_secret` | Im Chat + Terminal sichtbar (2026-03-03) | `openssl rand -base64 32` → Keycloak Admin Console → `occ user_oidc:provider` |
-| Redis-Passwort | `secrets/redis_nextcloud_password` | Im Chat + Terminal sichtbar (2026-03-03) | `openssl rand -base64 32` → `occ config:system:set redis password` → Container recreate |
-| Nextcloud Admin-Passwort | `secrets/nextcloud_admin_password` | Nicht im Chat sichtbar, aber Defense in Depth | `openssl rand -base64 32` → `occ user:resetpassword admin` |
-| Keycloak User `jozapf` | Keycloak Realm (DB) | Temporäres Passwort `changeme` im Terminal (2026-03-01) | Ändert sich automatisch beim ersten Login (required action) |
+Secrets are stored as files on the host and mounted into containers via Docker Compose `secrets:` block under `/run/secrets/`. No secret appears as a plaintext environment variable in compose files.
 
-Zusätzlich **bereits behobene** Schwachstellen:
+The secrets directory is protected with `chmod 700`, individual secret files with `chmod 600`. The directory and all secret files are excluded from version control via `.gitignore`.
 
-| Problem | Status | Datum |
+### 5.2 Secret Access in Containers
+
+Secrets inside containers are owned by the host user with permissions `600`. Only root can read them inside the container.
+
+**Design decision:** The container entrypoint runs as root, reads `_FILE` variables, and writes the values into the respective application configuration. The application user (e.g., www-data) accesses only the configuration at runtime, never the secret files directly.
+
+For services that do not natively support `_FILE` suffixes (Keycloak, Redis), a shell wrapper is used as entrypoint to read the secret file and pass the value via environment variable to the service process.
+
+### 5.3 Git Security
+
+The `.gitignore` excludes all sensitive paths: secret files, environment files, runbooks containing terminal output, and archive directories pending review.
+
+### 5.4 Application Config — Risk Assessment
+
+Some applications (e.g., Nextcloud) store database passwords and session secrets in plaintext configuration files. These files reside on Docker volumes and are readable only by root and the application user.
+
+**Assessment: Acceptable residual risk.** The applications provide no mechanism to read these values from files at runtime. Mitigation is provided through volume permissions and the fact that database networks are configured as `internal: true` — even with knowledge of a DB password, the database is unreachable from outside.
+
+---
+
+## 6. Secret Rotation Strategy
+
+All secrets generated during development are tracked for rotation before production go-live. A pre-production checklist tracks:
+
+- Secrets that were visible in terminal sessions during debugging
+- Secrets that were initially hardcoded and later migrated to file-based storage
+- Temporary passwords set during initial deployment
+
+Each secret has a documented rotation procedure specifying the exact commands and service restarts required. The rotation schedule follows a 60–90 day cycle for production.
+
+Previously resolved issues:
+
+| Issue | Resolution |
+|---|---|
+| Cache password hardcoded in compose file | Migrated to secret file with shell wrapper |
+| Admin password shared with database root | Separated into dedicated secret |
+| Bruteforce protection temporarily disabled during debugging | Re-enabled after successful testing |
+
+---
+
+## 7. Temporary Configurations (Pre-Production)
+
+The following settings exist for the development phase and are tracked for review before production go-live:
+
+| Category | Risk | Action Required |
 |---|---|---|
-| Redis-Passwort `changeme-redis` hardcoded in Compose | ✅ In Secret-Datei ausgelagert | 2026-03-03 |
-| Nextcloud Admin nutzte `mariadb_root_password` | ✅ Eigenes Secret erstellt | 2026-03-03 |
-| Bruteforce-Schutz war temporär deaktiviert | ✅ Wieder aktiviert | 2026-03-03 |
+| SSRF protection relaxed for internal OIDC backchannel | **Medium** | Evaluate removal after DNS go-live |
+| Static host entries for container-internal DNS resolution | Low | Remove when public DNS is active |
+| Self-signed TLS certificate for LAN testing | Low | Replace with Let's Encrypt |
+| Identity provider running in development mode | **High** | Switch to optimized production build |
+| Reverse proxy temporarily bound to LAN interface | **Medium** | Restrict to loopback before production |
 
 ---
 
-## 7. Temporäre Konfigurationen (Pre-Production)
+## 8. OIDC Security Architecture
 
-Die folgenden Einstellungen sind für die Entwicklungsphase ohne echtes DNS und TLS notwendig und **müssen vor Production-Go-Live überprüft und angepasst werden**:
-
-| Einstellung | Ort | Risiko | Aktion |
-|---|---|---|---|
-| `allow_local_remote_servers = true` | Nextcloud `config.php` | **Mittel** — SSRF-Schutz deaktiviert | Prüfen ob nach DNS-Go-Live zurücknehmbar |
-| `extra_hosts: id.sine-math.com:172.31.1.3` | Nextcloud Compose | Niedrig — statische IP-Bindung | Entfernen wenn DNS live |
-| dnsmasq `address=/id.sine-math.com/172.31.1.3` | `/etc/dnsmasq.d/opendesk.conf` | Niedrig — DNS-Workaround | Entfernen/ändern wenn DNS live |
-| `/etc/hosts` Eintrag `cloud.sine-math.com` | Host `/etc/hosts` | Niedrig — lokale DNS-Überschreibung | Entfernen vor DNS-Go-Live |
-| `DOCKER_API_VERSION=1.44` | Traefik Compose | Keins — wirkungslos seit v3.6 | Entfernen (Cleanup) |
-| Keycloak `start-dev` Modus | Keycloak Compose | **Hoch** — keine Optimierung, Dev-Features aktiv | `kc.sh build` + `start` (Production Build) |
-
----
-
-## 8. OIDC-Sicherheitsarchitektur
-
-### 8.1 Authentifizierungsfluss
+### 8.1 Authentication Flow
 
 ```
-Browser → Nextcloud → 303 Redirect → Keycloak Login → Authorization Code + PKCE
-Keycloak → Callback → Nextcloud → Token Exchange (Backchannel) → Keycloak
-Keycloak → ID Token + Access Token → Nextcloud → Session erstellt
+Browser → Application → 303 Redirect → Identity Provider Login
+Identity Provider → Authorization Code + PKCE → Callback
+Application → Backchannel Token Exchange → Identity Provider
+Identity Provider → ID Token + Access Token → Application → Session created
 ```
 
-### 8.2 Implementierte Sicherheitsmaßnahmen
+### 8.2 Implemented Security Controls
 
-- **PKCE (Proof Key for Code Exchange)** mit S256: Verhindert Authorization Code Interception
-- **Authorization Code Flow** (nicht Implicit): Token werden nie im Browser exponiert
-- **Backchannel Token Exchange**: Nextcloud tauscht Code direkt mit Keycloak, nicht über den Browser
-- **Client Secret**: Zusätzliche Absicherung des Token-Endpoints (confidential client)
-- **Scope Limitation**: Nur `openid email profile` — kein übermäßiger Zugriff auf Keycloak-Daten
+- **PKCE (Proof Key for Code Exchange)** with S256: Prevents authorization code interception
+- **Authorization Code Flow** (not Implicit): Tokens are never exposed in the browser
+- **Backchannel Token Exchange**: Application exchanges the code directly with the identity provider, not via the browser
+- **Client Secret**: Additional protection of the token endpoint (confidential client)
+- **Scope Limitation**: Only `openid email profile` — no excessive access to identity provider data
 
-### 8.3 Verifizierungsstatus
+### 8.3 Verification Status
 
-| Prüfpunkt | Status | Beweis |
-|---|---|---|
-| OIDC Discovery Endpoint erreichbar (Container-intern) | ✅ | HTTP 200 auf `.well-known/openid-configuration` |
-| Issuer-URL konsistent (intern = extern) | ✅ | `http://id.sine-math.com:8443/realms/opendesk` |
-| Authorization Request korrekt (303 Redirect) | ✅ | Alle Parameter validiert inkl. PKCE |
-| End-to-End Browser Login | ⏳ | Blockiert durch fehlendes TLS, geplant bei DNS-Go-Live |
+| Check | Status |
+|---|---|
+| OIDC Discovery endpoint reachable (container-internal) | ✅ |
+| Issuer URL consistent (internal = external) | ✅ |
+| Authorization request parameters validated (incl. PKCE) | ✅ |
+| End-to-end browser login with SSO | ✅ |
 
 ---
 
-## 9. Gesamtbewertung
+## 9. Overall Assessment
 
-| Schicht | Maßnahme | Status |
+| Layer | Control | Status |
 |---|---|---|
-| **Host** | UFW deny-by-default | ✅ |
+| **Host** | Firewall deny-by-default | ✅ |
 | **Host** | Docker `no-new-privileges` global | ✅ |
-| **Host** | auditd Docker Socket Monitoring | ✅ |
-| **Netzwerk** | 5 isolierte Docker-Netzwerke | ✅ |
-| **Netzwerk** | DB + WOPI `internal: true` | ✅ |
-| **Netzwerk** | Traefik nur auf 127.0.0.1 | ✅ |
-| **Container** | `cap_drop: ALL` + minimale `cap_add` | ✅ (7/7) |
-| **Container** | `no-new-privileges` pro Container | ✅ (7/7) |
-| **Container** | Memory/CPU Limits | ✅ (7/7) |
-| **Container** | Read-Only Filesystem (wo möglich) | ✅ (2/7, Rest dokumentierte Ausnahmen) |
+| **Host** | auditd monitoring | ✅ |
+| **Network** | 5 isolated Docker networks | ✅ |
+| **Network** | Database + WOPI networks fully internal | ✅ |
+| **Network** | Reverse proxy bound to loopback only | ✅ |
+| **Container** | `cap_drop: ALL` + minimal `cap_add` | ✅ (7/7) |
+| **Container** | `no-new-privileges` per container | ✅ (7/7) |
+| **Container** | Memory/CPU limits | ✅ (7/7) |
+| **Container** | Read-only filesystem (where possible) | ✅ (2/7, rest documented exceptions) |
 | **Container** | Healthchecks | ✅ (7/7) |
-| **Secrets** | File-basiert, chmod 600, Verzeichnis 700 | ✅ |
-| **Secrets** | Keine Klartext-Credentials in Compose | ✅ |
-| **Secrets** | Git-Schutz (.gitignore) | ✅ |
-| **IAM** | OIDC mit PKCE + Authorization Code Flow | ✅ |
-| **IAM** | Zentrales Identity Management (Keycloak) | ✅ |
-| **TLS** | End-to-End-Verschlüsselung | ⏳ (bei DNS-Go-Live mit Let's Encrypt) |
-| **Production** | Keycloak Production Build | ⏳ |
-| **Production** | Secret-Rotation | ⏳ |
+| **Secrets** | File-based, restrictive permissions | ✅ |
+| **Secrets** | No plaintext credentials in compose | ✅ |
+| **Secrets** | Git protection (.gitignore) | ✅ |
+| **IAM** | OIDC with PKCE + Authorization Code Flow | ✅ |
+| **IAM** | Centralized identity management | ✅ |
+| **TLS** | End-to-end encryption | ⏳ (Let's Encrypt at DNS go-live) |
+| **Production** | Identity provider production build | ⏳ |
+| **Production** | Secret rotation | ⏳ |
