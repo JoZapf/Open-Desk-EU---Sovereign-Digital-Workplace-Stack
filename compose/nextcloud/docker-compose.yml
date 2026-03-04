@@ -56,10 +56,13 @@ services:
           memory: 128M
           cpus: '0.25'
     entrypoint: ["/bin/sh", "-c"]
+    # IMPORTANT: In the exec line below, use $ before REDIS_PASS (Docker Compose escape)
+    # to prevent Compose from interpolating it as a Compose variable.
+    # The repo tool cannot write literal $, so apply on server: $REDIS_PASS
     command:
       - |
         REDIS_PASS=$(cat /run/secrets/redis_nextcloud_password)
-        exec redis-server --requirepass "$REDIS_PASS" --save "" --appendonly no
+        exec redis-server --requirepass "$$REDIS_PASS" --save "" --appendonly no
     secrets:
       - redis_nextcloud_password
     tmpfs:
@@ -99,6 +102,7 @@ services:
       MYSQL_USER: nextcloud
       MYSQL_PASSWORD_FILE: /run/secrets/mariadb_nextcloud_password
       REDIS_HOST: nextcloud-redis
+      REDIS_HOST_PASSWORD_FILE: /run/secrets/redis_nextcloud_password
       NEXTCLOUD_TRUSTED_DOMAINS: "cloud.sine-math.com"
       OVERWRITEPROTOCOL: https
       OVERWRITEHOST: cloud.sine-math.com
@@ -117,6 +121,7 @@ services:
     networks:
       - opendesk_db
       - opendesk_frontend
+      - opendesk_wopi
     depends_on:
       nextcloud-db:
         condition: service_healthy
@@ -182,4 +187,6 @@ networks:
   opendesk_frontend:
     external: true
   opendesk_db:
+    external: true
+  opendesk_wopi:
     external: true

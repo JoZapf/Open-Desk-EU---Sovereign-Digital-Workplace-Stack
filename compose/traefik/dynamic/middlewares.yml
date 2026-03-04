@@ -12,6 +12,7 @@ http:
         stsSeconds: 31536000
         stsIncludeSubdomains: true
         stsPreload: true
+        forceSTSHeader: true
 
     rate-limit:
       rateLimit:
@@ -30,3 +31,19 @@ http:
         regex: "https://(.*)/.well-known/(?:card|cal)dav"
         replacement: "https://${1}/remote.php/dav"
         permanent: true
+    collabora-headers:
+      headers:
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+    collabora-chain:
+      chain:
+        middlewares:
+          - collabora-headers
+          - rate-limit

@@ -1,0 +1,71 @@
+name: opendesk-collabora
+
+services:
+  collabora:
+    image: collabora/code:25.04.9.2.1
+    container_name: opendesk_collabora
+    restart: unless-stopped
+    # EXCEPTION: no-new-privileges NOT set — coolforkit-caps binary uses
+    # Linux file capabilities (setcap) which are blocked by no-new-privileges.
+    # See docs/NO_NEW_PRIVILEGES_PARADIGM.md for full rationale.
+    # Compensated by: custom seccomp profile, network isolation (opendesk_wopi
+    # internal), cap_drop ALL with minimal cap_add, memory limits.
+    security_opt:
+      - seccomp=cool-seccomp-profile.json
+      - apparmor:unconfined
+    cap_drop:
+      - ALL
+    cap_add:
+      - SYS_CHROOT       # Required: chroot operations for jail setup
+      - FOWNER           # Required: file ownership during jail creation
+      - CHOWN            # Required: chown operations in jail setup
+      - MKNOD            # Required: device node creation in jail
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+    environment:
+      # WOPI host allowlist — only Nextcloud can open documents
+      aliasgroup1: "https://cloud.sine-math.com:443"
+      server_name: office.sine-math.com
+      # Disable built-in SSL — TLS terminated at nginx/Traefik
+      extra_params: "--o:ssl.enable=false --o:ssl.termination=true --o:security.seccomp=true --o:security.capabilities=true"
+      # Admin console credentials
+      username: admin
+      password_file: /run/secrets/collabora_admin_password
+      # Logging
+      extra_params_logging: "--o:logging.level=warning"
+    extra_hosts:
+      - "cloud.sine-math.com:192.168.10.20"
+    secrets:
+      - collabora_admin_password
+    tmpfs:
+      - /tmp
+    networks:
+      - opendesk_frontend
+      - opendesk_wopi
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9980/hosting/capabilities || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.collabora.rule=Host(`office.sine-math.com`)"
+      - "traefik.http.routers.collabora.entrypoints=websecure"
+      - "traefik.http.routers.collabora.middlewares=collabora-chain@file"
+      - "traefik.http.services.collabora.loadbalancer.server.port=9980"
+      - "cloud.sine-math.com:192.168.10.20"
+secrets:
+  collabora_admin_password:
+    file: ../../secrets/collabora_admin_password
+
+networks:
+  opendesk_frontend:
+    external: true
+  opendesk_wopi:
+    external: true
