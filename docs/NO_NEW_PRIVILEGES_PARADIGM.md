@@ -1,28 +1,28 @@
-# No-New-Privileges Paradigmenwechsel
+# No-New-Privileges Paradigm Shift
 
-## Dokumentversion
-| Datum | Autor | Beschreibung |
-|-------|-------|-------------|
-| 2026-03-04 | Jo | Initiale Dokumentation nach Collabora-Deployment |
+## Document Version
+| Date | Author | Description |
+|------|--------|-------------|
+| 2026-03-04 | — | Initial documentation after Collabora deployment |
 
-## Zusammenfassung
+## Summary
 
-Die Docker-Daemon-Konfiguration wurde von einer globalen `no-new-privileges`-Einstellung auf eine **container-individuelle** Steuerung umgestellt. Auslöser war das Deployment von Collabora Online (CODE), dessen Sicherheitsmodell auf Linux File Capabilities basiert — inkompatibel mit `no-new-privileges`.
+The Docker daemon configuration was changed from a global `no-new-privileges` setting to **per-container** control. The trigger was the deployment of Collabora Online (CODE), whose security model relies on Linux file capabilities — incompatible with `no-new-privileges`.
 
-## Hintergrund: Was ist no-new-privileges?
+## Background: What Is no-new-privileges?
 
-`no-new-privileges` ist ein Linux-Kernel-Feature (`PR_SET_NO_NEW_PRIVS`), das verhindert, dass ein Prozess oder dessen Kindprozesse über `execve()` zusätzliche Privilegien erlangen. Konkret blockiert es:
+`no-new-privileges` is a Linux kernel feature (`PR_SET_NO_NEW_PRIVS`) that prevents a process or its children from gaining additional privileges via `execve()`. Specifically, it blocks:
 
-- **SUID/SGID-Binaries:** Programme mit gesetztem Set-UID/GID-Bit können keine erhöhten Rechte erlangen
-- **Linux File Capabilities:** Über `setcap` auf Binaries gesetzte Capabilities (z.B. `cap_sys_chroot+ep`) werden ignoriert
-- **Ambient Capabilities:** Können nicht über `execve()` hinweg weitergegeben werden
+- **SUID/SGID binaries:** Programs with set-UID/GID bits cannot acquire elevated rights
+- **Linux file capabilities:** Capabilities set on binaries via `setcap` (e.g., `cap_sys_chroot+ep`) are ignored
+- **Ambient capabilities:** Cannot be passed across `execve()` boundaries
 
-In Docker-Umgebungen ist dies eine wichtige Härtungsmaßnahme, weil es Container-Ausbrüche über privilege escalation erschwert.
+In Docker environments, this is an important hardening measure because it makes container breakouts via privilege escalation significantly harder.
 
-## Vorherige Konfiguration
+## Previous Configuration
 
 ```json
-// /etc/docker/daemon.json (bis 2026-03-04)
+// /etc/docker/daemon.json (before change)
 {
   "no-new-privileges": true,
   "ipv6": false,
@@ -30,98 +30,92 @@ In Docker-Umgebungen ist dies eine wichtige Härtungsmaßnahme, weil es Containe
 }
 ```
 
-Diese Einstellung galt **global für alle Container** auf dem Host und konnte auf Container-Ebene **nicht überschrieben** werden — auch nicht mit `security_opt: [no-new-privileges:false]` oder `privileged: true`.
+This setting applied **globally to all containers** on the host and could **not be overridden** at container level — not even with `security_opt: [no-new-privileges:false]` or `privileged: true`.
 
-## Warum Collabora das braucht
+## Why Collabora Requires This
 
-Collabora Online isoliert jedes geöffnete Dokument in einem eigenen Chroot-Jail. Die Binary `coolforkit-caps` verwendet dazu Linux File Capabilities:
+Collabora Online isolates each open document in its own chroot jail. The binary `coolforkit-caps` uses Linux file capabilities for this:
 
 ```
 /opt/cool/bin/coolforkit-caps = cap_fowner,cap_chown,cap_mknod,cap_sys_chroot+ep
 ```
 
-Mit `no-new-privileges` werden diese Capabilities beim `exec()` ignoriert → `coolforkit` kann keine Jails erstellen → kein Dokument kann geöffnet werden. Der Fehler manifestiert sich als `CLONE_NEWNS unshare failed (EPERM)`.
+With `no-new-privileges`, these capabilities are ignored on `exec()` → `coolforkit` cannot create jails → no document can be opened. The error manifests as `CLONE_NEWNS unshare failed (EPERM)`.
 
-## Neue Konfiguration
+## New Configuration
 
 ```json
-// /etc/docker/daemon.json (ab 2026-03-04)
+// /etc/docker/daemon.json (after change)
 {
   "ipv6": false,
   "fixed-cidr-v6": "fd00::/80"
 }
 ```
 
-`no-new-privileges` wird **nicht mehr global** gesetzt, sondern **pro Container** via `security_opt`:
+`no-new-privileges` is **no longer set globally** but **per container** via `security_opt`:
 
 ```yaml
-# Standard für alle Container (außer Collabora):
+# Default for all containers (except Collabora):
 security_opt:
   - no-new-privileges:true
 ```
 
-## Betroffene Container
+## Affected Containers
 
-### Container MIT no-new-privileges (Standard)
+### Containers WITH no-new-privileges (Default)
 
-Alle OpenDesk-Container setzen `no-new-privileges: true` explizit in ihren Compose-Dateien:
+All OpenDesk containers set `no-new-privileges: true` explicitly in their compose files:
 
-- `opendesk_nextcloud` (+ cron, db, redis)
-- `opendesk_keycloak` (+ db)
-- `opendesk_traefik`
+- Nextcloud (+ cron, db, redis)
+- Keycloak (+ db)
+- Traefik
 
-### Container OHNE no-new-privileges (Ausnahme)
+### Containers WITHOUT no-new-privileges (Exception)
 
-| Container | Begründung | Kompensation |
-|-----------|-----------|-------------|
-| `opendesk_collabora` | `coolforkit-caps` benötigt File Capabilities für Chroot-Jails | Custom Seccomp-Profil, `cap_drop: ALL` + minimale `cap_add`, Netzwerkisolation (`opendesk_wopi` intern), Memory-Limits |
+| Container | Reason | Compensation |
+|-----------|--------|-------------|
+| Collabora | `coolforkit-caps` requires file capabilities for chroot jails | Custom seccomp profile, `cap_drop: ALL` + minimal `cap_add`, network isolation (WOPI network internal), memory limits |
 
-### Produktionscontainer (Handlungsbedarf)
+### Pre-Existing Production Containers (Action Required)
 
-Die folgenden bestehenden Container auf CREA-think hatten bisher den Schutz über den Daemon. Sie benötigen `security_opt: [no-new-privileges:true]` in ihren jeweiligen Compose-Dateien:
+Any containers that previously relied on the daemon-level `no-new-privileges` setting now need `security_opt: [no-new-privileges:true]` added to their respective compose files.
 
-- nextcloud-app, nextcloud-db, nextcloud-redis, nextcloud-cron, nextcloud-nginx (Produktiv-Nextcloud)
-- homeassistant
-- empc4 Stack (12 Container)
-- jozapf.com Stack (3 Container)
-- mosquitto, nvme2mqtt
+**Status:** Not yet implemented. Planned as a separate hardening task.
 
-**Status:** Noch nicht umgesetzt. Geplant als separater Hardening-Task.
+## Collabora-Specific Mitigations
 
-## Collabora-spezifische Mitigations
+Since Collabora must run without `no-new-privileges`, the following compensating controls are in place:
 
-Da Collabora ohne `no-new-privileges` laufen muss, werden folgende kompensierende Maßnahmen eingesetzt:
+1. **Custom seccomp profile** (`cool-seccomp-profile.json`): Docker default + 6 additional syscalls (`unshare`, `mount`, `umount2`, `setns`, `clone`, `chroot`). All other syscalls remain blocked.
 
-1. **Custom Seccomp-Profil** (`cool-seccomp-profile.json`): Docker-Default + 6 zusätzliche Syscalls (`unshare`, `mount`, `umount2`, `setns`, `clone`, `chroot`). Alle anderen Syscalls bleiben blockiert.
+2. **Minimal capabilities:** `cap_drop: ALL` + only `SYS_CHROOT`, `FOWNER`, `CHOWN`, `MKNOD`
 
-2. **Minimale Capabilities:** `cap_drop: ALL` + nur `SYS_CHROOT`, `FOWNER`, `CHOWN`, `MKNOD`
+3. **Network isolation:** WOPI traffic runs on the internal WOPI network. No direct internet access to container ports.
 
-3. **Netzwerkisolation:** WOPI-Traffic läuft über das interne `opendesk_wopi`-Netzwerk. Kein direkter Zugriff aus dem Internet auf Container-Ports.
+4. **Resource limits:** 1536 MB RAM, 1.0 CPU — limits blast radius in case of compromise.
 
-4. **Ressourcenlimits:** 1536 MB RAM, 1.0 CPU — begrenzt Auswirkungen bei Kompromittierung
+5. **AppArmor:** Currently `unconfined` (Collabora compatibility). TODO: Create a dedicated AppArmor profile.
 
-5. **AppArmor:** Aktuell `unconfined` (Collabora-Kompatibilität). TODO: Eigenes AppArmor-Profil erstellen.
+## Decision Matrix: When Can no-new-privileges NOT Be Set?
 
-## Entscheidungsmatrix: Wann kann no-new-privileges NICHT gesetzt werden?
-
-| Bedingung | no-new-privileges möglich? |
+| Condition | no-new-privileges possible? |
 |-----------|---------------------------|
-| Container verwendet nur Docker Capabilities (`cap_add`) | **Ja** — Docker Capabilities und File Capabilities sind verschiedene Mechanismen |
-| Container hat SUID-Binaries im Image | **Nein** — SUID wird blockiert |
-| Container verwendet `setcap`-Binaries (File Capabilities) | **Nein** — File Capabilities werden ignoriert |
-| Container braucht Ambient Capabilities über `execve()` | **Nein** — Ambient Capabilities werden gedroppt |
+| Container uses only Docker capabilities (`cap_add`) | **Yes** — Docker capabilities and file capabilities are different mechanisms |
+| Container image contains SUID binaries | **No** — SUID is blocked |
+| Container uses `setcap` binaries (file capabilities) | **No** — File capabilities are ignored |
+| Container requires ambient capabilities across `execve()` | **No** — Ambient capabilities are dropped |
 
 ## Lessons Learned
 
-1. **Docker-Daemon-Einstellungen können auf Container-Ebene nicht überschrieben werden.** Auch `privileged: true` hebelt `no-new-privileges` auf Daemon-Ebene nicht aus.
+1. **Docker daemon settings cannot be overridden at container level.** Even `privileged: true` does not override daemon-level `no-new-privileges`.
 
-2. **Docker Capabilities ≠ Linux File Capabilities.** `cap_add: [SYS_CHROOT]` in Docker Compose setzt Capabilities auf den Prozess. `setcap cap_sys_chroot+ep /binary` setzt Capabilities auf die Datei. Mit `no-new-privileges` funktioniert nur ersteres.
+2. **Docker capabilities ≠ Linux file capabilities.** `cap_add: [SYS_CHROOT]` in Docker Compose sets capabilities on the process. `setcap cap_sys_chroot+ep /binary` sets capabilities on the file. With `no-new-privileges`, only the former works.
 
-3. **Immer zuerst die offizielle Dokumentation prüfen.** Collabora dokumentiert das Seccomp-Profil und die File-Capability-Anforderung explizit. Trial-and-Error hätte vermieden werden können.
+3. **Always check the official documentation first.** Collabora explicitly documents the seccomp profile and file capability requirements. Trial-and-error could have been avoided.
 
-## Referenzen
+## References
 
 - [Collabora Online Docker Documentation](https://sdk.collaboraonline.com/docs/installation/CODE_Docker_image.html)
 - [Docker Security: no-new-privileges](https://docs.docker.com/engine/security/#no-new-privileges)
 - [Linux man page: prctl PR_SET_NO_NEW_PRIVS](https://man7.org/linux/man-pages/man2/prctl.2.html)
-- Seccomp-Profil: `compose/collabora/cool-seccomp-profile.json`
+- Seccomp profile: `compose/collabora/cool-seccomp-profile.json`

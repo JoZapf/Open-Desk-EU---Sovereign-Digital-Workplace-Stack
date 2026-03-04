@@ -1,203 +1,199 @@
 # Network & Routing Overview — Open-Desk EU
 
-Verbindliche Referenz für alle Port-, Routing- und DNS-Entscheidungen.
-Muss bei jeder Netzwerk- oder Routing-Änderung aktualisiert werden.
+Authoritative reference for all port, routing, and DNS decisions.
+Must be updated with every network or routing change.
 
 ---
 
-## 1. Traffic-Pfad (Außen → Innen)
+## 1. Traffic Path (Outside → Inside)
 
 ```
 Browser (LAN/WAN)
   │
   │ HTTPS :443
   ▼
-nginx (Host: 192.168.10.20)
-  │  /etc/nginx/sites-available/opendesk
-  │  TLS-Terminierung (Self-Signed → Let's Encrypt bei Go-Live)
-  │  proxy_pass http://192.168.10.20:8443
-  │  Setzt X-Forwarded-For, X-Real-IP, Host
+nginx (Host)
+  │  TLS termination (self-signed → Let's Encrypt at go-live)
+  │  proxy_pass http://<HOST_IP>:8443
+  │  Sets X-Forwarded-For, X-Real-IP, Host
   │
   │ HTTP :8443
   ▼
-Traefik (Container: opendesk_traefik)
-  │  Bound: 192.168.10.20:8443 (temporär, → 127.0.0.1 vor Production)
+Traefik (Container)
+  │  Bound: <HOST_IP>:8443 (temporary, → 127.0.0.1 before production)
   │  Routing via Host()-Rules + Labels
   │  Middlewares: security-headers, rate-limit, default-chain, collabora-chain
   │
   │ HTTP :80/:9980/:8080
   ▼
-Ziel-Container (Nextcloud, Collabora, Keycloak, ...)
+Target container (Nextcloud, Collabora, Keycloak, ...)
 ```
 
-**Wichtig:** TLS endet bei nginx. Zwischen nginx → Traefik → Container ist alles HTTP.
+**Important:** TLS terminates at nginx. Everything between nginx → Traefik → containers is plain HTTP.
 
 ---
 
-## 2. Host-Ports
+## 2. Host Ports
 
-| Port | Protokoll | Gebunden an | Dienst | Firewall (UFW) |
-|------|-----------|-------------|--------|-----------------|
-| 443 | TCP/TLS | 0.0.0.0 | nginx (openDesk + Produktiv) | ALLOW Anywhere |
-| 80 | TCP | 192.168.10.0/24 | nginx (HTTP→HTTPS Redirect) | ALLOW LAN |
-| 8443 | TCP | 192.168.10.20 | Traefik Ingress | ALLOW LAN (temporär!) |
-| 8890 | TCP | 127.0.0.1 | Traefik Dashboard/API | Kein UFW (nur lokal) |
-| 8085 | TCP | 0.0.0.0 | Produktiv-Nextcloud (alt) | ALLOW LAN |
-| 3307 | — | — | ~~nextcloud-db-dev~~ (entfernt) | — |
+| Port | Protocol | Bound to | Service | Firewall (UFW) |
+|------|----------|----------|---------|-----------------|
+| 443 | TCP/TLS | 0.0.0.0 | nginx (OpenDesk + production) | ALLOW Anywhere |
+| 80 | TCP | LAN subnet | nginx (HTTP→HTTPS redirect) | ALLOW LAN |
+| 8443 | TCP | HOST_IP | Traefik ingress | ALLOW LAN (temporary!) |
+| 8890 | TCP | 127.0.0.1 | Traefik dashboard/API | No UFW (localhost only) |
 
-⚠️ **Port 8443 muss vor Production zurück auf 127.0.0.1** (siehe PRE_PRODUCTION_CHECKLIST).
+⚠️ **Port 8443 must be changed to 127.0.0.1 before production** (see PRE_PRODUCTION_CHECKLIST).
 
 ---
 
-## 3. Docker-Netzwerke
+## 3. Docker Networks
 
-| Netzwerk | Subnet | Internal | Zweck |
-|----------|--------|----------|-------|
-| opendesk_frontend | 172.31.1.0/24 | Nein | Traefik ↔ Web-Container |
-| opendesk_backend | 172.31.2.0/24 | Nein | Keycloak-Backchannel |
-| opendesk_db | 172.31.3.0/24 | **Ja** | Datenbanken (kein Internet) |
-| opendesk_mail | 172.31.4.0/24 | Nein | Mail-Relay (reserviert) |
-| opendesk_wopi | 172.31.5.0/24 | **Ja** | Collabora ↔ Nextcloud WOPI |
-
----
-
-## 4. Traefik-Routing (Host-Rules)
-
-| Domain | Router | Ziel-Container | Port | Middleware | Netzwerk |
-|--------|--------|----------------|------|------------|----------|
-| cloud.sine-math.com | nextcloud@docker | opendesk_nextcloud | 80 | default-chain, nextcloud-redirects | frontend |
-| id.sine-math.com | keycloak@docker | opendesk_keycloak | 8080 | default-chain | frontend+backend |
-| office.sine-math.com | collabora@docker | opendesk_collabora | 9980 | **collabora-chain** | frontend |
-
-**collabora-chain:** Wie default-chain, aber OHNE `frameDeny: true` (Collabora wird als iframe in Nextcloud eingebettet).
+| Network | Subnet | Internal | Purpose |
+|---------|--------|----------|---------|
+| opendesk_frontend | 172.31.1.0/24 | No | Traefik ↔ web containers |
+| opendesk_backend | 172.31.2.0/24 | No | Keycloak backchannel |
+| opendesk_db | 172.31.3.0/24 | **Yes** | Databases (no internet) |
+| opendesk_mail | 172.31.4.0/24 | No | Mail relay (reserved) |
+| opendesk_wopi | 172.31.5.0/24 | **Yes** | Collabora ↔ Nextcloud WOPI |
 
 ---
 
-## 5. Container-Netzwerk-Zuordnung
+## 4. Traefik Routing (Host Rules)
 
-| Container | frontend | backend | db | wopi | Begründung |
-|-----------|----------|---------|-----|------|-----------|
-| opendesk_traefik | ✅ | ✅ | — | — | Routing zu allen Web-Containern |
-| opendesk_keycloak | ✅ | ✅ | — | — | Web + Backchannel |
-| opendesk_keycloak_db | — | — | ✅ | — | Nur DB-Zugriff |
-| opendesk_nextcloud | ✅ | — | ✅ | ✅ | Web + DB + WOPI-Callbacks |
-| opendesk_nextcloud_db | — | — | ✅ | — | Nur DB-Zugriff |
-| opendesk_nextcloud_redis | — | — | ✅ | — | Cache, nur intern |
-| opendesk_nextcloud_cron | — | — | ✅ | — | Cron-Jobs, DB-Zugriff |
-| opendesk_collabora | ✅ | — | — | ✅ | Web (Editor-UI) + WOPI |
+| Domain | Router | Target Container | Port | Middleware | Network |
+|--------|--------|-----------------|------|------------|---------|
+| DOMAIN_CLOUD | nextcloud@docker | Nextcloud | 80 | default-chain, nextcloud-redirects | frontend |
+| DOMAIN_IAM | keycloak@docker | Keycloak | 8080 | default-chain | frontend+backend |
+| DOMAIN_OFFICE | collabora@docker | Collabora | 9980 | **collabora-chain** | frontend |
+
+**collabora-chain:** Same as default-chain but WITHOUT `frameDeny: true` (Collabora is embedded as an iframe in Nextcloud).
 
 ---
 
-## 6. DNS-Auflösung (Container → Domänen)
+## 5. Container Network Assignment
 
-Container können `*.sine-math.com` nicht über normales DNS auflösen (Domänen existieren nur lokal). Drei Mechanismen:
+| Container | frontend | backend | db | wopi | Reason |
+|-----------|----------|---------|-----|------|--------|
+| Traefik | ✅ | ✅ | — | — | Routes to all web containers |
+| Keycloak | ✅ | ✅ | — | — | Web + backchannel |
+| Keycloak DB | — | — | ✅ | — | Database access only |
+| Nextcloud | ✅ | — | ✅ | ✅ | Web + DB + WOPI callbacks |
+| Nextcloud DB | — | — | ✅ | — | Database access only |
+| Nextcloud Redis | — | — | ✅ | — | Cache, internal only |
+| Nextcloud Cron | — | — | ✅ | — | Cron jobs, DB access |
+| Collabora | ✅ | — | — | ✅ | Web (editor UI) + WOPI |
+
+---
+
+## 6. DNS Resolution (Container → Domains)
+
+Containers cannot resolve the project domains via normal DNS (domains may not exist in public DNS yet). Three mechanisms:
 
 ### 6a. extra_hosts (Docker Compose)
 
-Statische `/etc/hosts`-Einträge im Container. **Entscheidend: Ziel-IP hängt vom Routing-Pfad ab!**
+Static `/etc/hosts` entries inside the container. **Critical: target IP depends on the routing path!**
 
-| Container | Domain | Ziel-IP | Warum diese IP? |
-|-----------|--------|---------|-----------------|
-| opendesk_nextcloud | id.sine-math.com | 172.31.1.3 (Traefik) | Backchannel über Traefik (gleiche Issuer-URL wie Browser) |
-| opendesk_collabora | cloud.sine-math.com | **192.168.10.20** (Host/nginx) | WOPI-Callback muss über nginx→Traefik→Nextcloud laufen, weil Collabora HTTPS erwartet und TLS bei nginx terminiert |
+| Container | Domain | Target IP | Why this IP? |
+|-----------|--------|-----------|--------------|
+| Nextcloud | DOMAIN_IAM | TRAEFIK_FRONTEND_IP | Backchannel via Traefik (same issuer URL as browser) |
+| Collabora | DOMAIN_CLOUD | **HOST_IP** (nginx) | WOPI callback must go through nginx→Traefik→Nextcloud because Collabora expects HTTPS and TLS terminates at nginx |
 
-#### Warum nicht immer Traefik-IP?
+#### Why Not Always Use the Traefik IP?
 
 ```
-Nextcloud → id.sine-math.com
-  Traefik-IP (172.31.1.3) funktioniert, weil:
-  - Nextcloud ist im frontend-Netzwerk (gleich wie Traefik)
-  - Traefik lauscht auf :8443 HTTP
-  - Nextcloud spricht HTTP zum Backchannel
+Nextcloud → DOMAIN_IAM
+  Traefik IP works because:
+  - Nextcloud is on the frontend network (same as Traefik)
+  - Traefik listens on :8443 HTTP
+  - Nextcloud speaks HTTP for the backchannel
 
-Collabora → cloud.sine-math.com
-  Traefik-IP funktioniert NICHT, weil:
-  - Collabora macht HTTPS-Request (WOPI erfordert TLS)
-  - Traefik hat kein TLS-Zertifikat (TLS terminiert bei nginx)
-  - Also: Collabora → nginx (192.168.10.20:443, TLS) → Traefik → Nextcloud
+Collabora → DOMAIN_CLOUD
+  Traefik IP does NOT work because:
+  - Collabora makes an HTTPS request (WOPI requires TLS)
+  - Traefik has no TLS certificate (TLS terminates at nginx)
+  - Therefore: Collabora → nginx (HOST_IP:443, TLS) → Traefik → Nextcloud
 ```
 
 ### 6b. dnsmasq (Host)
 
-Für PHP `dns_get_record()` (ignoriert `/etc/hosts` und `extra_hosts`):
+Required for PHP `dns_get_record()` (which ignores `/etc/hosts` and `extra_hosts`):
 
 ```
 # /etc/dnsmasq.d/opendesk.conf
-address=/id.sine-math.com/172.31.1.3
+address=/DOMAIN_IAM/<TRAEFIK_FRONTEND_IP>
 ```
 
 ### 6c. /etc/hosts (Host)
 
 ```
-# Nur für lokale Tests — ENTFERNEN vor DNS-Go-Live
-192.168.10.20 cloud.sine-math.com
-192.168.10.20 id.sine-math.com
-192.168.10.20 office.sine-math.com
+# Only for local testing — REMOVE before DNS go-live
+<HOST_IP> <DOMAIN_CLOUD>
+<HOST_IP> <DOMAIN_IAM>
+<HOST_IP> <DOMAIN_OFFICE>
 ```
 
 ---
 
-## 7. WOPI-Kommunikation (Collabora ↔ Nextcloud)
+## 7. WOPI Communication (Collabora ↔ Nextcloud)
 
 ```
 Browser
-  │ wss://office.sine-math.com/cool/.../ws
+  │ wss://DOMAIN_OFFICE/cool/.../ws
   ▼
 nginx → Traefik → Collabora (WebSocket)
                       │
-                      │ HTTPS callback: cloud.sine-math.com
+                      │ HTTPS callback: DOMAIN_CLOUD
                       │ (CheckFileInfo, GetFile, PutFile)
                       ▼
                     nginx → Traefik → Nextcloud
 ```
 
-**Konfiguration in Nextcloud (richdocuments):**
+**Configuration in Nextcloud (richdocuments):**
 
-| Setting | Wert | Zweck |
-|---------|------|-------|
-| wopi_url | http://opendesk_collabora:9980 | Nextcloud → Collabora (intern, Docker-DNS) |
-| public_wopi_url | https://office.sine-math.com | Browser → Collabora (extern) |
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| wopi_url | http://opendesk_collabora:9980 | Nextcloud → Collabora (internal, Docker DNS) |
+| public_wopi_url | https://DOMAIN_OFFICE | Browser → Collabora (external) |
 
-**Konfiguration in Collabora:**
+**Configuration in Collabora:**
 
-| Env-Variable | Wert | Zweck |
-|--------------|------|-------|
-| aliasgroup1 | https://cloud.sine-math.com:443 | Erlaubter WOPI-Client |
-| server_name | office.sine-math.com | Öffentlicher Hostname für Discovery-URLs |
-
----
-
-## 8. Entscheidungsmatrix: extra_hosts IP-Wahl
-
-Wenn ein Container eine `*.sine-math.com`-Domain erreichen muss:
-
-```
-Braucht der Request TLS (HTTPS)?
-  │
-  ├── Nein → Traefik-IP (172.31.1.3 im frontend-Netz)
-  │          Container muss im frontend-Netzwerk sein
-  │
-  └── Ja  → Host-IP (192.168.10.20)
-             Request geht über nginx (TLS-Terminierung) → Traefik → Ziel
-             Container muss NICHT im frontend-Netz sein (geht über Docker-Bridge)
-```
+| Env Variable | Value | Purpose |
+|-------------|-------|---------|
+| aliasgroup1 | https://DOMAIN_CLOUD:443 | Allowed WOPI client |
+| server_name | DOMAIN_OFFICE | Public hostname for discovery URLs |
 
 ---
 
-## 9. Bekannte Statische IPs
+## 8. Decision Matrix: extra_hosts IP Selection
 
-| Ressource | IP | Netzwerk | Hinweis |
-|-----------|----|----------|---------|
-| Traefik | 172.31.1.3 | frontend | Vergeben durch Docker, kann sich bei Recreate ändern! |
-| Traefik | 172.31.2.2 | backend | Vergeben durch Docker |
-| Host/nginx | 192.168.10.20 | LAN | Statisch konfiguriert |
+When a container needs to reach a project domain:
 
-⚠️ **Docker vergibt IPs dynamisch.** Die Traefik-IP 172.31.1.3 ist nicht garantiert. Bei Problemen nach Recreate prüfen:
+```
+Does the request require TLS (HTTPS)?
+  │
+  ├── No  → Traefik IP (TRAEFIK_FRONTEND_IP on frontend network)
+  │          Container must be on the frontend network
+  │
+  └── Yes → Host IP (HOST_IP)
+             Request goes via nginx (TLS termination) → Traefik → target
+             Container does NOT need to be on the frontend network (uses Docker bridge)
+```
+
+---
+
+## 9. Known Static IPs
+
+| Resource | IP | Network | Note |
+|----------|----|---------|------|
+| Traefik | TRAEFIK_FRONTEND_IP | frontend | Assigned by Docker, may change on recreate! |
+| Host/nginx | HOST_IP | LAN | Statically configured |
+
+⚠️ **Docker assigns IPs dynamically.** The Traefik IP is not guaranteed. After a recreate, verify:
 ```bash
-docker inspect opendesk_traefik --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{.IPAddress}}{{"\n"}}{{end}}'
+docker inspect <traefik_container> --format '{{range .NetworkSettings.Networks}}{{.NetworkID}} {{.IPAddress}}{{"\n"}}{{end}}'
 ```
 
 ---
 
-*Letzte Aktualisierung: 2026-03-04*
-*Änderungsgrund: Collabora-Deployment — extra_hosts, server_name, collabora-chain Middleware*
+*Last updated: 2026-03-04*
+*Change reason: Collabora deployment — extra_hosts, server_name, collabora-chain middleware*

@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 # =============================================================================
 # verify-network-routing.sh — Open-Desk EU
-# Verifiziert alle Ports, Routen, DNS, Container-Netzwerke und WOPI-Pfade
-# gemäß docs/NETWORK_ROUTING_OVERVIEW.md
+# Verifies all ports, routes, DNS, container networks, and WOPI paths
+# as defined in docs/NETWORK_ROUTING_OVERVIEW.md
 #
-# Ausführung: bash scripts/verify-network-routing.sh
-# Voraussetzung: Auf CREA-think (192.168.10.20) als User jo ausführen
+# Usage: bash scripts/verify-network-routing.sh
+# Prerequisite: Run on the Docker host as deploying user
 # =============================================================================
 
 set -uo pipefail
 
-# --- Farben ---
+# --- Load environment ---
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/../.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: .env not found at $ENV_FILE"
+    echo "Copy .env.example to .env and adjust values for your deployment."
+    exit 1
+fi
+
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+
+# --- Colors ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -53,75 +66,68 @@ check_warn() {
 }
 
 # =============================================================================
-# 1. HOST-PORTS (Abschnitt 2)
+# 1. HOST PORTS (Section 2)
 # =============================================================================
-log_section "1. Host-Ports"
+log_section "1. Host Ports"
 
 # nginx HTTPS :443
 if ss -tlnp 2>/dev/null | grep -q ':443 '; then
-    check_pass "Port 443 (nginx TLS) — lauscht"
+    check_pass "Port 443 (nginx TLS) — listening"
 else
-    check_fail "Port 443 (nginx TLS) — nicht erreichbar"
+    check_fail "Port 443 (nginx TLS) — not reachable"
 fi
 
 # nginx HTTP :80
 if ss -tlnp 2>/dev/null | grep -q ':80 '; then
-    check_pass "Port 80 (nginx HTTP→HTTPS) — lauscht"
+    check_pass "Port 80 (nginx HTTP→HTTPS) — listening"
 else
-    check_warn "Port 80 (nginx HTTP) — nicht aktiv"
+    check_warn "Port 80 (nginx HTTP) — not active"
 fi
 
-# Traefik :8443
-TRAEFIK_BIND=$(ss -tlnp 2>/dev/null | grep ':8443 ' | awk '{print $4}')
+# Traefik :TRAEFIK_PORT
+TRAEFIK_BIND=$(ss -tlnp 2>/dev/null | grep ":${TRAEFIK_PORT} " | awk '{print $4}')
 if [ -n "$TRAEFIK_BIND" ]; then
-    check_pass "Port 8443 (Traefik) — lauscht auf $TRAEFIK_BIND"
+    check_pass "Port ${TRAEFIK_PORT} (Traefik) — listening on $TRAEFIK_BIND"
     if echo "$TRAEFIK_BIND" | grep -q '127.0.0.1'; then
-        check_pass "Port 8443 — nur lokal gebunden (Production-ready)"
-    elif echo "$TRAEFIK_BIND" | grep -q '192.168.10.20'; then
-        check_warn "Port 8443 — auf LAN-IP gebunden (temporär OK, vor Production ändern!)"
+        check_pass "Port ${TRAEFIK_PORT} — bound to localhost only (production-ready)"
+    elif echo "$TRAEFIK_BIND" | grep -q "${HOST_IP}"; then
+        check_warn "Port ${TRAEFIK_PORT} — bound to LAN IP (temporary OK, change before production!)"
     else
-        check_warn "Port 8443 — gebunden auf $TRAEFIK_BIND (unerwartet)"
+        check_warn "Port ${TRAEFIK_PORT} — bound to $TRAEFIK_BIND (unexpected)"
     fi
 else
-    check_fail "Port 8443 (Traefik) — lauscht NICHT"
+    check_fail "Port ${TRAEFIK_PORT} (Traefik) — NOT listening"
 fi
 
-# Traefik Dashboard :8890
-DASHBOARD_BIND=$(ss -tlnp 2>/dev/null | grep ':8890 ' | awk '{print $4}')
+# Traefik Dashboard :TRAEFIK_DASHBOARD_PORT
+DASHBOARD_BIND=$(ss -tlnp 2>/dev/null | grep ":${TRAEFIK_DASHBOARD_PORT} " | awk '{print $4}')
 if [ -n "$DASHBOARD_BIND" ]; then
     if echo "$DASHBOARD_BIND" | grep -q '127.0.0.1'; then
-        check_pass "Port 8890 (Dashboard) — nur lokal gebunden"
+        check_pass "Port ${TRAEFIK_DASHBOARD_PORT} (Dashboard) — bound to localhost only"
     else
-        check_fail "Port 8890 (Dashboard) — NICHT nur lokal: $DASHBOARD_BIND"
+        check_fail "Port ${TRAEFIK_DASHBOARD_PORT} (Dashboard) — NOT localhost only: $DASHBOARD_BIND"
     fi
 else
-    check_warn "Port 8890 (Dashboard) — nicht aktiv"
-fi
-
-# Port 3307 (soll NICHT lauschen)
-if ss -tlnp 2>/dev/null | grep -q ':3307 '; then
-    check_fail "Port 3307 (nextcloud-db-dev) — LAUSCHT NOCH! Sicherheitsrisiko!"
-else
-    check_pass "Port 3307 (nextcloud-db-dev) — korrekt geschlossen"
+    check_warn "Port ${TRAEFIK_DASHBOARD_PORT} (Dashboard) — not active"
 fi
 
 # =============================================================================
-# 2. DOCKER-NETZWERKE (Abschnitt 3)
+# 2. DOCKER NETWORKS (Section 3)
 # =============================================================================
-log_section "2. Docker-Netzwerke"
+log_section "2. Docker Networks"
 
 declare -A EXPECTED_NETS
-EXPECTED_NETS[opendesk_frontend]="172.31.1.0/24|false"
-EXPECTED_NETS[opendesk_backend]="172.31.2.0/24|false"
-EXPECTED_NETS[opendesk_db]="172.31.3.0/24|true"
-EXPECTED_NETS[opendesk_mail]="172.31.4.0/24|false"
-EXPECTED_NETS[opendesk_wopi]="172.31.5.0/24|true"
+EXPECTED_NETS[opendesk_frontend]="${NET_FRONTEND}|false"
+EXPECTED_NETS[opendesk_backend]="${NET_BACKEND}|false"
+EXPECTED_NETS[opendesk_db]="${NET_DB}|true"
+EXPECTED_NETS[opendesk_mail]="${NET_MAIL}|false"
+EXPECTED_NETS[opendesk_wopi]="${NET_WOPI}|true"
 
 for net in "${!EXPECTED_NETS[@]}"; do
     IFS='|' read -r expected_subnet expected_internal <<< "${EXPECTED_NETS[$net]}"
 
     if ! docker network inspect "$net" &>/dev/null; then
-        check_fail "Netzwerk $net — existiert nicht"
+        check_fail "Network $net — does not exist"
         continue
     fi
 
@@ -131,30 +137,30 @@ for net in "${!EXPECTED_NETS[@]}"; do
     if [ "$actual_subnet" = "$expected_subnet" ]; then
         check_pass "$net — Subnet $actual_subnet"
     else
-        check_fail "$net — Subnet ist $actual_subnet, erwartet $expected_subnet"
+        check_fail "$net — Subnet is $actual_subnet, expected $expected_subnet"
     fi
 
     if [ "$actual_internal" = "$expected_internal" ]; then
         check_pass "$net — Internal=$actual_internal"
     else
-        check_fail "$net — Internal=$actual_internal, erwartet $expected_internal"
+        check_fail "$net — Internal=$actual_internal, expected $expected_internal"
     fi
 done
 
 # =============================================================================
-# 3. CONTAINER-STATUS + HEALTH (Voraussetzung)
+# 3. CONTAINER STATUS + HEALTH
 # =============================================================================
-log_section "3. Container-Status"
+log_section "3. Container Status"
 
 CONTAINERS=(
-    opendesk_traefik
-    opendesk_keycloak
-    opendesk_keycloak_db
-    opendesk_nextcloud
-    opendesk_nextcloud_db
-    opendesk_nextcloud_redis
-    opendesk_nextcloud_cron
-    opendesk_collabora
+    "${CT_TRAEFIK}"
+    "${CT_KEYCLOAK}"
+    "${CT_KEYCLOAK_DB}"
+    "${CT_NEXTCLOUD}"
+    "${CT_NEXTCLOUD_DB}"
+    "${CT_NEXTCLOUD_REDIS}"
+    "${CT_NEXTCLOUD_CRON}"
+    "${CT_COLLABORA}"
 )
 
 for c in "${CONTAINERS[@]}"; do
@@ -165,7 +171,7 @@ for c in "${CONTAINERS[@]}"; do
         if [ "$health" = "healthy" ] || [ "$health" = "no-healthcheck" ]; then
             check_pass "$c — running ($health)"
         else
-            check_warn "$c — running aber $health"
+            check_warn "$c — running but $health"
         fi
     else
         check_fail "$c — Status: $status"
@@ -173,20 +179,19 @@ for c in "${CONTAINERS[@]}"; do
 done
 
 # =============================================================================
-# 4. CONTAINER-NETZWERK-ZUORDNUNG (Abschnitt 5)
+# 4. CONTAINER NETWORK ASSIGNMENT (Section 5)
 # =============================================================================
-log_section "4. Container-Netzwerk-Zuordnung"
+log_section "4. Container Network Assignment"
 
-# Format: container|expected_nets (kommagetrennt)
 NET_MAP=(
-    "opendesk_traefik|opendesk_frontend,opendesk_backend"
-    "opendesk_keycloak|opendesk_frontend,opendesk_backend"
-    "opendesk_keycloak_db|opendesk_db"
-    "opendesk_nextcloud|opendesk_frontend,opendesk_db,opendesk_wopi"
-    "opendesk_nextcloud_db|opendesk_db"
-    "opendesk_nextcloud_redis|opendesk_db"
-    "opendesk_nextcloud_cron|opendesk_db"
-    "opendesk_collabora|opendesk_frontend,opendesk_wopi"
+    "${CT_TRAEFIK}|opendesk_frontend,opendesk_backend"
+    "${CT_KEYCLOAK}|opendesk_frontend,opendesk_backend"
+    "${CT_KEYCLOAK_DB}|opendesk_db"
+    "${CT_NEXTCLOUD}|opendesk_frontend,opendesk_db,opendesk_wopi"
+    "${CT_NEXTCLOUD_DB}|opendesk_db"
+    "${CT_NEXTCLOUD_REDIS}|opendesk_db"
+    "${CT_NEXTCLOUD_CRON}|opendesk_db"
+    "${CT_COLLABORA}|opendesk_frontend,opendesk_wopi"
 )
 
 for entry in "${NET_MAP[@]}"; do
@@ -200,77 +205,76 @@ for entry in "${NET_MAP[@]}"; do
         if echo "$actual_nets" | grep -qw "$net"; then
             : # ok
         else
-            check_fail "$container — fehlt in Netzwerk $net"
+            check_fail "$container — missing from network $net"
             all_ok=false
         fi
     done
 
     if $all_ok; then
-        check_pass "$container — korrekt in: ${expected_str//,/, }"
+        check_pass "$container — correctly in: ${expected_str//,/, }"
     fi
 done
 
 # =============================================================================
-# 5. TRAEFIK-ROUTING (Abschnitt 4)
+# 5. TRAEFIK ROUTING (Section 4)
 # =============================================================================
-log_section "5. Traefik-Routing (Host-Rules)"
+log_section "5. Traefik Routing (Host Rules)"
 
-TRAEFIK_API="http://127.0.0.1:8890/api"
+TRAEFIK_API="http://127.0.0.1:${TRAEFIK_DASHBOARD_PORT}/api"
 
 if ! curl -sf -m 3 "$TRAEFIK_API/overview" &>/dev/null; then
-    check_fail "Traefik API auf :8890 nicht erreichbar — Routing-Tests übersprungen"
+    check_fail "Traefik API on :${TRAEFIK_DASHBOARD_PORT} not reachable — skipping routing tests"
 else
-    check_pass "Traefik API erreichbar"
+    check_pass "Traefik API reachable"
 
     ROUTERS=$(curl -sf -m 3 "$TRAEFIK_API/http/routers" 2>/dev/null || echo "[]")
 
-    for domain_router in "cloud.sine-math.com|nextcloud" "id.sine-math.com|keycloak" "office.sine-math.com|collabora"; do
+    for domain_router in "${DOMAIN_CLOUD}|nextcloud" "${DOMAIN_IAM}|keycloak" "${DOMAIN_OFFICE}|collabora"; do
         IFS='|' read -r domain router_name <<< "$domain_router"
         if echo "$ROUTERS" | grep -q "$domain"; then
-            check_pass "Router $router_name — Host($domain) registriert"
+            check_pass "Router $router_name — Host($domain) registered"
         else
-            check_fail "Router $router_name — Host($domain) NICHT in Traefik"
+            check_fail "Router $router_name — Host($domain) NOT in Traefik"
         fi
     done
 
     MIDDLEWARES=$(curl -sf -m 3 "$TRAEFIK_API/http/middlewares" 2>/dev/null || echo "[]")
     for mw in "default-chain@file" "collabora-chain@file" "security-headers@file" "rate-limit@file"; do
         if echo "$MIDDLEWARES" | grep -q "$mw"; then
-            check_pass "Middleware $mw — registriert"
+            check_pass "Middleware $mw — registered"
         else
-            check_fail "Middleware $mw — NICHT gefunden"
+            check_fail "Middleware $mw — NOT found"
         fi
     done
 fi
 
 # =============================================================================
-# 6. HTTP-ROUTING END-TO-END (Abschnitt 1)
+# 6. HTTP ROUTING END-TO-END (Section 1)
 # =============================================================================
-log_section "6. HTTP-Routing End-to-End"
+log_section "6. HTTP Routing End-to-End"
 
-# Via Traefik (intern)
+# Via Traefik (internal)
 for test in \
-    "cloud.sine-math.com|/status.php|200|Nextcloud via Traefik" \
-    "id.sine-math.com|/realms/opendesk/.well-known/openid-configuration|200|Keycloak via Traefik" \
-    "office.sine-math.com|/hosting/capabilities|200|Collabora via Traefik"
+    "${DOMAIN_CLOUD}|/status.php|200|Nextcloud via Traefik" \
+    "${DOMAIN_IAM}|/realms/opendesk/.well-known/openid-configuration|200|Keycloak via Traefik" \
+    "${DOMAIN_OFFICE}|/hosting/capabilities|200|Collabora via Traefik"
 do
     IFS='|' read -r host path expected_code desc <<< "$test"
     actual_code=$(curl -sf -m 5 -o /dev/null -w "%{http_code}" \
-        -H "Host: $host" "http://192.168.10.20:8443${path}" 2>/dev/null || echo "000")
+        -H "Host: $host" "http://${HOST_IP}:${TRAEFIK_PORT}${path}" 2>/dev/null || echo "000")
 
     if [ "$actual_code" = "$expected_code" ]; then
         check_pass "$desc — HTTP $actual_code"
     else
-        check_fail "$desc — HTTP $actual_code (erwartet $expected_code)"
+        check_fail "$desc — HTTP $actual_code (expected $expected_code)"
     fi
 done
 
-# Via nginx (TLS, extern)
-# Hinweis: id/office.sine-math.com brauchen eigene nginx server-Blöcke
+# Via nginx (TLS, external)
 for test in \
-    "cloud.sine-math.com|/status.php|200|Nextcloud via nginx+TLS" \
-    "id.sine-math.com|/|302|Keycloak via nginx+TLS" \
-    "office.sine-math.com|/hosting/capabilities|200|Collabora via nginx+TLS"
+    "${DOMAIN_CLOUD}|/status.php|200|Nextcloud via nginx+TLS" \
+    "${DOMAIN_IAM}|/|302|Keycloak via nginx+TLS" \
+    "${DOMAIN_OFFICE}|/hosting/capabilities|200|Collabora via nginx+TLS"
 do
     IFS='|' read -r host path expected_code desc <<< "$test"
     actual_code=$(curl -skf -m 5 -o /dev/null -w "%{http_code}" \
@@ -279,215 +283,214 @@ do
     if [ "$actual_code" = "$expected_code" ]; then
         check_pass "$desc — HTTPS $actual_code"
     elif [ "$actual_code" = "000" ] || [ "$actual_code" = "000000" ]; then
-        check_warn "$desc — HTTPS $actual_code (nginx server-Block fehlt?)"
+        check_warn "$desc — HTTPS $actual_code (nginx server block missing?)"
     else
-        check_fail "$desc — HTTPS $actual_code (erwartet $expected_code)"
+        check_fail "$desc — HTTPS $actual_code (expected $expected_code)"
     fi
 done
 
 # =============================================================================
-# 7. SECURITY HEADERS (Abschnitt 4 Middleware)
+# 7. SECURITY HEADERS (Section 4 Middleware)
 # =============================================================================
 log_section "7. Security Headers"
 
 NC_HEADERS=$(curl -sf -m 5 -D- -o /dev/null \
-    -H "Host: cloud.sine-math.com" "http://192.168.10.20:8443/login" 2>/dev/null || echo "")
+    -H "Host: ${DOMAIN_CLOUD}" "http://${HOST_IP}:${TRAEFIK_PORT}/login" 2>/dev/null || echo "")
 
 for header in "X-Content-Type-Options" "X-Robots-Tag"; do
     if echo "$NC_HEADERS" | grep -qi "$header"; then
-        check_pass "Nextcloud — Header $header vorhanden"
+        check_pass "Nextcloud — Header $header present"
     else
-        check_fail "Nextcloud — Header $header FEHLT"
+        check_fail "Nextcloud — Header $header MISSING"
     fi
 done
 
-# HSTS nur über TLS prüfbar (Traefik sendet HSTS korrekt nur über HTTPS)
-HSTS_HEADERS=$(curl -skf -m 5 -D- -o /dev/null "https://cloud.sine-math.com/login" 2>/dev/null || echo "")
+# HSTS only verifiable over TLS
+HSTS_HEADERS=$(curl -skf -m 5 -D- -o /dev/null "https://${DOMAIN_CLOUD}/login" 2>/dev/null || echo "")
 if echo "$HSTS_HEADERS" | grep -qi "Strict-Transport-Security"; then
-    check_pass "Nextcloud — HSTS vorhanden (via HTTPS)"
+    check_pass "Nextcloud — HSTS present (via HTTPS)"
 elif [ -z "$HSTS_HEADERS" ]; then
-    check_warn "Nextcloud — HSTS nicht prüfbar (nginx-TLS nicht erreichbar?)"
+    check_warn "Nextcloud — HSTS not verifiable (nginx TLS not reachable?)"
 else
-    check_fail "Nextcloud — HSTS FEHLT in HTTPS-Response"
+    check_fail "Nextcloud — HSTS MISSING in HTTPS response"
 fi
 
-# Collabora: kein X-Frame-Options DENY
+# Collabora: no X-Frame-Options DENY
 COLL_HEADERS=$(curl -sf -m 5 -D- -o /dev/null \
-    -H "Host: office.sine-math.com" "http://192.168.10.20:8443/hosting/capabilities" 2>/dev/null || echo "")
+    -H "Host: ${DOMAIN_OFFICE}" "http://${HOST_IP}:${TRAEFIK_PORT}/hosting/capabilities" 2>/dev/null || echo "")
 
 if echo "$COLL_HEADERS" | grep -qi "X-Frame-Options: DENY"; then
-    check_fail "Collabora — X-Frame-Options: DENY gesetzt (blockiert iframe!)"
+    check_fail "Collabora — X-Frame-Options: DENY is set (blocks iframe!)"
 else
-    check_pass "Collabora — kein X-Frame-Options: DENY (iframe erlaubt)"
+    check_pass "Collabora — no X-Frame-Options: DENY (iframe allowed)"
 fi
 
-# CSP muss office.sine-math.com enthalten
+# CSP must include DOMAIN_OFFICE
 CSP=$(echo "$NC_HEADERS" | grep -i "content-security-policy" || echo "")
-if echo "$CSP" | grep -q "office.sine-math.com"; then
-    check_pass "Nextcloud CSP — office.sine-math.com in frame-src"
+if echo "$CSP" | grep -q "${DOMAIN_OFFICE}"; then
+    check_pass "Nextcloud CSP — ${DOMAIN_OFFICE} in frame-src"
 else
-    check_fail "Nextcloud CSP — office.sine-math.com FEHLT (Collabora-iframe blockiert)"
+    check_fail "Nextcloud CSP — ${DOMAIN_OFFICE} MISSING (Collabora iframe blocked)"
 fi
 
 # =============================================================================
-# 8. DNS-AUFLÖSUNG IN CONTAINERN (Abschnitt 6)
+# 8. CONTAINER DNS (extra_hosts — Section 6)
 # =============================================================================
-log_section "8. Container-DNS (extra_hosts)"
+log_section "8. Container DNS (extra_hosts)"
 
-# Nextcloud → id.sine-math.com
-NC_RESOLVE=$(docker exec opendesk_nextcloud getent hosts id.sine-math.com 2>/dev/null | awk '{print $1}')
-if [ "$NC_RESOLVE" = "172.31.1.3" ]; then
-    check_pass "Nextcloud → id.sine-math.com = 172.31.1.3 (Traefik)"
+# Nextcloud → DOMAIN_IAM
+NC_RESOLVE=$(docker exec "${CT_NEXTCLOUD}" getent hosts "${DOMAIN_IAM}" 2>/dev/null | awk '{print $1}')
+if [ "$NC_RESOLVE" = "${TRAEFIK_FRONTEND_IP}" ]; then
+    check_pass "Nextcloud → ${DOMAIN_IAM} = ${TRAEFIK_FRONTEND_IP} (Traefik)"
 elif [ -n "$NC_RESOLVE" ]; then
-    check_warn "Nextcloud → id.sine-math.com = $NC_RESOLVE (erwartet 172.31.1.3)"
+    check_warn "Nextcloud → ${DOMAIN_IAM} = $NC_RESOLVE (expected ${TRAEFIK_FRONTEND_IP})"
 else
-    check_fail "Nextcloud → id.sine-math.com — nicht auflösbar"
+    check_fail "Nextcloud → ${DOMAIN_IAM} — cannot resolve"
 fi
 
-# Collabora → cloud.sine-math.com
-# getent ignoriert /etc/hosts in manchen Containern — grep /etc/hosts direkt
-COLL_RESOLVE=$(docker exec opendesk_collabora grep cloud.sine-math.com /etc/hosts 2>/dev/null | awk '{print $1}')
-if [ "$COLL_RESOLVE" = "192.168.10.20" ]; then
-    check_pass "Collabora → cloud.sine-math.com = 192.168.10.20 in /etc/hosts"
+# Collabora → DOMAIN_CLOUD
+COLL_RESOLVE=$(docker exec "${CT_COLLABORA}" grep "${DOMAIN_CLOUD}" /etc/hosts 2>/dev/null | awk '{print $1}')
+if [ "$COLL_RESOLVE" = "${HOST_IP}" ]; then
+    check_pass "Collabora → ${DOMAIN_CLOUD} = ${HOST_IP} in /etc/hosts"
 elif [ -n "$COLL_RESOLVE" ]; then
-    check_warn "Collabora → cloud.sine-math.com = $COLL_RESOLVE (erwartet 192.168.10.20)"
+    check_warn "Collabora → ${DOMAIN_CLOUD} = $COLL_RESOLVE (expected ${HOST_IP})"
 else
-    check_fail "Collabora → cloud.sine-math.com — FEHLT in /etc/hosts"
+    check_fail "Collabora → ${DOMAIN_CLOUD} — MISSING in /etc/hosts"
 fi
 
 # =============================================================================
-# 9. BACKCHANNEL-KONNEKTIVITÄT (Abschnitt 6/7)
+# 9. BACKCHANNEL CONNECTIVITY (Section 6/7)
 # =============================================================================
-log_section "9. Backchannel-Konnektivität"
+log_section "9. Backchannel Connectivity"
 
 # Nextcloud → Keycloak (HTTP)
-NC_KC=$(docker exec opendesk_nextcloud curl -sf -m 5 -o /dev/null -w "%{http_code}" \
-    "http://id.sine-math.com:8443/realms/opendesk/.well-known/openid-configuration" 2>/dev/null || echo "000")
+NC_KC=$(docker exec "${CT_NEXTCLOUD}" curl -sf -m 5 -o /dev/null -w "%{http_code}" \
+    "http://${DOMAIN_IAM}:${TRAEFIK_PORT}/realms/opendesk/.well-known/openid-configuration" 2>/dev/null || echo "000")
 if [ "$NC_KC" = "200" ]; then
-    check_pass "Nextcloud → Keycloak Backchannel — HTTP $NC_KC"
+    check_pass "Nextcloud → Keycloak backchannel — HTTP $NC_KC"
 else
-    check_fail "Nextcloud → Keycloak Backchannel — HTTP $NC_KC (erwartet 200)"
+    check_fail "Nextcloud → Keycloak backchannel — HTTP $NC_KC (expected 200)"
 fi
 
-# Collabora → Nextcloud (HTTPS, WOPI-Callback)
-COLL_NC=$(docker exec opendesk_collabora curl -skf -m 5 -o /dev/null -w "%{http_code}" \
-    "https://cloud.sine-math.com/status.php" 2>/dev/null || echo "000")
+# Collabora → Nextcloud (HTTPS, WOPI callback)
+COLL_NC=$(docker exec "${CT_COLLABORA}" curl -skf -m 5 -o /dev/null -w "%{http_code}" \
+    "https://${DOMAIN_CLOUD}/status.php" 2>/dev/null || echo "000")
 if [ "$COLL_NC" = "200" ]; then
-    check_pass "Collabora → Nextcloud WOPI-Callback — HTTPS $COLL_NC"
+    check_pass "Collabora → Nextcloud WOPI callback — HTTPS $COLL_NC"
 else
-    check_fail "Collabora → Nextcloud WOPI-Callback — HTTPS $COLL_NC (erwartet 200)"
+    check_fail "Collabora → Nextcloud WOPI callback — HTTPS $COLL_NC (expected 200)"
 fi
 
-# Nextcloud → Collabora (HTTP, Docker-DNS)
-NC_COLL=$(docker exec opendesk_nextcloud curl -sf -m 5 -o /dev/null -w "%{http_code}" \
-    "http://opendesk_collabora:9980/hosting/capabilities" 2>/dev/null || echo "000")
+# Nextcloud → Collabora (HTTP, Docker DNS)
+NC_COLL=$(docker exec "${CT_NEXTCLOUD}" curl -sf -m 5 -o /dev/null -w "%{http_code}" \
+    "http://${CT_COLLABORA}:9980/hosting/capabilities" 2>/dev/null || echo "000")
 if [ "$NC_COLL" = "200" ]; then
-    check_pass "Nextcloud → Collabora Discovery (intern) — HTTP $NC_COLL"
+    check_pass "Nextcloud → Collabora discovery (internal) — HTTP $NC_COLL"
 else
-    check_fail "Nextcloud → Collabora Discovery (intern) — HTTP $NC_COLL (erwartet 200)"
+    check_fail "Nextcloud → Collabora discovery (internal) — HTTP $NC_COLL (expected 200)"
 fi
 
 # =============================================================================
-# 10. WOPI-KONFIGURATION (Abschnitt 7)
+# 10. WOPI CONFIGURATION (Section 7)
 # =============================================================================
-log_section "10. WOPI-Konfiguration"
+log_section "10. WOPI Configuration"
 
-WOPI_URL=$(docker exec -u www-data opendesk_nextcloud php occ config:app:get richdocuments wopi_url 2>/dev/null || echo "")
-PUBLIC_WOPI=$(docker exec -u www-data opendesk_nextcloud php occ config:app:get richdocuments public_wopi_url 2>/dev/null || echo "")
+WOPI_URL=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:app:get richdocuments wopi_url 2>/dev/null || echo "")
+PUBLIC_WOPI=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:app:get richdocuments public_wopi_url 2>/dev/null || echo "")
 
-if [ "$WOPI_URL" = "http://opendesk_collabora:9980" ]; then
+if [ "$WOPI_URL" = "http://${CT_COLLABORA}:9980" ]; then
     check_pass "wopi_url = $WOPI_URL"
 else
-    check_fail "wopi_url = '$WOPI_URL' (erwartet http://opendesk_collabora:9980)"
+    check_fail "wopi_url = '$WOPI_URL' (expected http://${CT_COLLABORA}:9980)"
 fi
 
-if [ "$PUBLIC_WOPI" = "https://office.sine-math.com" ]; then
+if [ "$PUBLIC_WOPI" = "https://${DOMAIN_OFFICE}" ]; then
     check_pass "public_wopi_url = $PUBLIC_WOPI"
 else
-    check_fail "public_wopi_url = '$PUBLIC_WOPI' (erwartet https://office.sine-math.com)"
+    check_fail "public_wopi_url = '$PUBLIC_WOPI' (expected https://${DOMAIN_OFFICE})"
 fi
 
-# Discovery-XML
-DISCOVERY=$(docker exec opendesk_nextcloud curl -sf -m 5 \
-    "http://opendesk_collabora:9980/hosting/discovery" 2>/dev/null | head -c 500)
-if echo "$DISCOVERY" | grep -q "office.sine-math.com"; then
-    check_pass "Collabora Discovery — URLs zeigen auf office.sine-math.com"
+# Discovery XML
+DISCOVERY=$(docker exec "${CT_NEXTCLOUD}" curl -sf -m 5 \
+    "http://${CT_COLLABORA}:9980/hosting/discovery" 2>/dev/null | head -c 500)
+if echo "$DISCOVERY" | grep -q "${DOMAIN_OFFICE}"; then
+    check_pass "Collabora Discovery — URLs point to ${DOMAIN_OFFICE}"
 else
-    check_fail "Collabora Discovery — office.sine-math.com FEHLT in XML"
+    check_fail "Collabora Discovery — ${DOMAIN_OFFICE} MISSING in XML"
 fi
 
 # Collabora env vars
-ALIAS=$(docker exec opendesk_collabora printenv aliasgroup1 2>/dev/null || echo "")
-if [ "$ALIAS" = "https://cloud.sine-math.com:443" ]; then
+ALIAS=$(docker exec "${CT_COLLABORA}" printenv aliasgroup1 2>/dev/null || echo "")
+if [ "$ALIAS" = "https://${DOMAIN_CLOUD}:443" ]; then
     check_pass "Collabora aliasgroup1 = $ALIAS"
 else
-    check_fail "Collabora aliasgroup1 = '$ALIAS' (erwartet https://cloud.sine-math.com:443)"
+    check_fail "Collabora aliasgroup1 = '$ALIAS' (expected https://${DOMAIN_CLOUD}:443)"
 fi
 
-SNAME=$(docker exec opendesk_collabora printenv server_name 2>/dev/null || echo "")
-if [ "$SNAME" = "office.sine-math.com" ]; then
+SNAME=$(docker exec "${CT_COLLABORA}" printenv server_name 2>/dev/null || echo "")
+if [ "$SNAME" = "${DOMAIN_OFFICE}" ]; then
     check_pass "Collabora server_name = $SNAME"
 else
-    check_fail "Collabora server_name = '$SNAME' (erwartet office.sine-math.com)"
+    check_fail "Collabora server_name = '$SNAME' (expected ${DOMAIN_OFFICE})"
 fi
 
 # =============================================================================
-# 11. NEXTCLOUD-KONFIGURATION
+# 11. NEXTCLOUD CONFIGURATION
 # =============================================================================
-log_section "11. Nextcloud-Konfiguration"
+log_section "11. Nextcloud Configuration"
 
-OW_PROTO=$(docker exec -u www-data opendesk_nextcloud php occ config:system:get overwriteprotocol 2>/dev/null || echo "")
+OW_PROTO=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:system:get overwriteprotocol 2>/dev/null || echo "")
 if [ "$OW_PROTO" = "https" ]; then
     check_pass "overwriteprotocol = https"
 else
-    check_fail "overwriteprotocol = '$OW_PROTO' (erwartet https)"
+    check_fail "overwriteprotocol = '$OW_PROTO' (expected https)"
 fi
 
-OW_HOST=$(docker exec -u www-data opendesk_nextcloud php occ config:system:get overwritehost 2>/dev/null || echo "")
-if [ "$OW_HOST" = "cloud.sine-math.com" ]; then
+OW_HOST=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:system:get overwritehost 2>/dev/null || echo "")
+if [ "$OW_HOST" = "${DOMAIN_CLOUD}" ]; then
     check_pass "overwritehost = $OW_HOST"
 else
-    check_fail "overwritehost = '$OW_HOST' (erwartet cloud.sine-math.com)"
+    check_fail "overwritehost = '$OW_HOST' (expected ${DOMAIN_CLOUD})"
 fi
 
-# Redis — Secret nur als root lesbar, daher auth über redis-cli testen
-REDIS_OK=$(docker exec opendesk_nextcloud_redis sh -c \
+# Redis — secret only readable as root, test via redis-cli
+REDIS_OK=$(docker exec "${CT_NEXTCLOUD_REDIS}" sh -c \
     'redis-cli -a "$(cat /run/secrets/redis_nextcloud_password)" ping 2>/dev/null' \
     2>/dev/null | tr -d '[:space:]')
 if [ "$REDIS_OK" = "PONG" ]; then
-    check_pass "Redis — authentifizierter PING erfolgreich"
+    check_pass "Redis — authenticated PING successful"
 else
-    check_fail "Redis — PING fehlgeschlagen ($REDIS_OK)"
+    check_fail "Redis — PING failed ($REDIS_OK)"
 fi
 
-# Redis ohne Passwort muss abgelehnt werden
-REDIS_NOAUTH=$(docker exec opendesk_nextcloud_redis redis-cli ping 2>/dev/null | tr -d '[:space:]')
+# Redis without password must be rejected
+REDIS_NOAUTH=$(docker exec "${CT_NEXTCLOUD_REDIS}" redis-cli ping 2>/dev/null | tr -d '[:space:]')
 if echo "$REDIS_NOAUTH" | grep -qi "NOAUTH\|ERR"; then
-    check_pass "Redis — unauthentifizierter Zugriff wird abgelehnt"
+    check_pass "Redis — unauthenticated access rejected"
 else
-    check_fail "Redis — unauthentifizierter Zugriff möglich! ($REDIS_NOAUTH)"
+    check_fail "Redis — unauthenticated access possible! ($REDIS_NOAUTH)"
 fi
 
 # =============================================================================
-# 12. TRAEFIK IP-STABILITÄT (Abschnitt 9)
+# 12. TRAEFIK IP STABILITY (Section 9)
 # =============================================================================
-log_section "12. Traefik IP-Prüfung"
+log_section "12. Traefik IP Check"
 
-TRAEFIK_FRONTEND_IP=$(docker inspect opendesk_traefik \
+ACTUAL_TRAEFIK_IP=$(docker inspect "${CT_TRAEFIK}" \
     --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "opendesk_frontend"}}{{$v.IPAddress}}{{end}}{{end}}' 2>/dev/null)
 
-if [ "$TRAEFIK_FRONTEND_IP" = "172.31.1.3" ]; then
-    check_pass "Traefik Frontend-IP = 172.31.1.3 (wie in extra_hosts referenziert)"
+if [ "$ACTUAL_TRAEFIK_IP" = "${TRAEFIK_FRONTEND_IP}" ]; then
+    check_pass "Traefik frontend IP = ${TRAEFIK_FRONTEND_IP} (matches extra_hosts reference)"
 else
-    check_warn "Traefik Frontend-IP = $TRAEFIK_FRONTEND_IP (extra_hosts erwarten 172.31.1.3!)"
+    check_warn "Traefik frontend IP = $ACTUAL_TRAEFIK_IP (extra_hosts expect ${TRAEFIK_FRONTEND_IP}!)"
 fi
 
 # =============================================================================
-# ZUSAMMENFASSUNG
+# SUMMARY
 # =============================================================================
 echo ""
 echo -e "${BOLD}═══════════════════════════════════════════════════════════${NC}"
-echo -e "${BOLD}  ERGEBNIS${NC}"
+echo -e "${BOLD}  RESULTS${NC}"
 echo -e "${BOLD}═══════════════════════════════════════════════════════════${NC}"
 echo ""
 echo -e "  ${GREEN}PASS:${NC} $PASS"
@@ -496,18 +499,17 @@ echo -e "  ${YELLOW}WARN:${NC} $WARN"
 echo ""
 
 TOTAL=$((PASS + FAIL + WARN))
-echo -e "  Gesamt: $TOTAL Checks | $(timestamp)"
+echo -e "  Total: $TOTAL checks | $(timestamp)"
 
 if [ "$FAIL" -eq 0 ]; then
-    echo -e "\n  ${GREEN}${BOLD}Alle kritischen Checks bestanden.${NC}"
+    echo -e "\n  ${GREEN}${BOLD}All critical checks passed.${NC}"
 else
-    echo -e "\n  ${RED}${BOLD}$FAIL kritische Fehler gefunden — siehe Details oben.${NC}"
+    echo -e "\n  ${RED}${BOLD}$FAIL critical failures found — see details above.${NC}"
 fi
 
-# Report in Datei
-REPORT_DIR="$HOME/docker/opendesk/docs"
-REPORT_FILE="$REPORT_DIR/verify-network-routing-$(date +%Y%m%d-%H%M%S).md"
-mkdir -p "$REPORT_DIR"
+# Write report to file
+mkdir -p "${REPORT_DIR}"
+REPORT_FILE="${REPORT_DIR}/verify-network-routing-$(date +%Y%m%d-%H%M%S).md"
 
 {
     echo "# Network & Routing Verification — $(date '+%Y-%m-%d %H:%M:%S')"
