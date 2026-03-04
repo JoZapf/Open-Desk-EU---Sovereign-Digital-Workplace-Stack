@@ -27,7 +27,7 @@ services:
     secrets:
       - postgres_keycloak_password
     volumes:
-      - /mnt/docker-data/opendesk/keycloak/db:/var/lib/postgresql/data
+      - ${DATA_DIR}/keycloak/db:/var/lib/postgresql/data
     networks:
       - opendesk_db
     healthcheck:
@@ -84,7 +84,7 @@ services:
       start_period: 60s
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.keycloak.rule=Host(`id.sine-math.com`)"
+      - "traefik.http.routers.keycloak.rule=Host(`${DOMAIN_IAM}`)"
       - "traefik.http.routers.keycloak.entrypoints=websecure"
       - "traefik.http.routers.keycloak.middlewares=default-chain@file"
       - "traefik.http.services.keycloak.loadbalancer.server.port=8080"

@@ -79,6 +79,57 @@ docker-compose.yml    Root orchestrator (network definitions)
 | [`docs/NO_NEW_PRIVILEGES_PARADIGM.md`](docs/NO_NEW_PRIVILEGES_PARADIGM.md) | Per-container no-new-privileges strategy and Collabora exception |
 | [`SECURITY.md`](SECURITY.md) | Full security architecture and audit results |
 | [`scripts/verify-network-routing.sh`](scripts/verify-network-routing.sh) | Automated 66-check verification across 12 areas |
+| [`.env.example`](.env.example) | Template for deployment-specific configuration (domains, IPs, ports) |
+
+## Configuration
+
+All deployment-specific values are centralized in a single `.env` file. Compose files reference these variables via `${VAR}` interpolation — no hardcoded domains, IPs, or paths in any compose file.
+
+```bash
+cp .env.example .env
+# Edit .env with your deployment values
+```
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `DOMAIN_CLOUD` | Nextcloud domain | `cloud.example.com` |
+| `DOMAIN_IAM` | Keycloak domain | `id.example.com` |
+| `DOMAIN_OFFICE` | Collabora domain | `office.example.com` |
+| `HOST_IP` | Server LAN IP (used for port bindings and WOPI routing) | `192.168.1.100` |
+| `LAN_SUBNET` | Local network CIDR | `192.168.1.0/24` |
+| `TRAEFIK_PORT` | Traefik HTTPS entrypoint (host-side) | `8443` |
+| `TRAEFIK_DASHBOARD_PORT` | Traefik dashboard (localhost only) | `8890` |
+| `TRAEFIK_FRONTEND_IP` | Traefik container IP on frontend network (for Keycloak backchannel) | `172.31.1.3` |
+| `NET_FRONTEND` .. `NET_WOPI` | Docker network subnets | `172.31.1.0/24` .. `172.31.5.0/24` |
+| `DATA_DIR` | Base path for persistent volumes | `/srv/opendesk-data` |
+| `CT_*` | Container names (used by verification script) | `opendesk_traefik`, ... |
+| `REPORT_DIR` | Output directory for verification reports | `/path/to/opendesk/docs` |
+
+See [`.env.example`](.env.example) for the complete template with all variables and defaults.
+
+## Quick Start
+
+```bash
+# 1. Clone and configure
+cp .env.example .env
+# Edit .env — at minimum set DOMAIN_*, HOST_IP, and DATA_DIR
+
+# 2. Create data directories
+sudo mkdir -p /srv/opendesk-data/{keycloak/db,mariadb,nextcloud,logs/traefik}
+sudo chmod 700 /srv/opendesk-data
+
+# 3. Create Docker networks
+# See docs/NETWORK_ROUTING_OVERVIEW.md Section 3
+
+# 4. Deploy services (order matters — always from project root)
+docker compose -f compose/traefik/docker-compose.yml up -d
+docker compose -f compose/keycloak/docker-compose.yml up -d
+docker compose -f compose/nextcloud/docker-compose.yml up -d
+docker compose -f compose/collabora/docker-compose.yml up -d
+
+# 5. Verify
+bash scripts/verify-network-routing.sh
+```
 
 ## License
 

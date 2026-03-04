@@ -3,12 +3,12 @@ services:
     image: traefik:v3.6
     container_name: opendesk_traefik
     restart: unless-stopped
-    user: "1000:984"
+    # Adjust GID to match your docker group (id -g docker or getent group docker)
+    user: "1000:<docker-gid>"
     read_only: true
     security_opt:
       - no-new-privileges:true
     environment:
-      - DOCKER_API_VERSION=1.44
     cap_drop:
       - ALL
     deploy:
@@ -17,13 +17,15 @@ services:
           memory: 256M
           cpus: '0.5'
     ports:
-      - "192.168.10.20:8443:8443"
-      - "127.0.0.1:8890:8080"
+      # Bind to HOST_IP for LAN access during testing.
+      # Change to 127.0.0.1 in production (traffic via upstream nginx).
+      - "${HOST_IP}:${TRAEFIK_PORT}:8443"
+      - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik.yml:/etc/traefik/traefik.yml:ro
       - ./dynamic:/etc/traefik/dynamic:ro
-      - /mnt/docker-data/opendesk/logs/traefik:/var/log/traefik
+      - ${DATA_DIR}/logs/traefik:/var/log/traefik
     tmpfs:
       - /tmp
     networks:
