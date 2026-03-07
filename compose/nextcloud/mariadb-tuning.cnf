@@ -1,0 +1,25 @@
+[mysqld]
+# === InnoDB Buffer Pool ===
+innodb_buffer_pool_size = 768M
+
+# === InnoDB Redo Log ===
+innodb_log_file_size = 256M
+
+# === Flush Strategy ===
+# 2 = flush to OS buffer per commit, fsync once/sec
+innodb_flush_log_at_trx_commit = 2
+
+# === Connections ===
+max_connections = 100
+
+# === Lock Timeout ===
+innodb_lock_wait_timeout = 120
+
+# === Temp Tables ===
+tmp_table_size = 64M
+max_heap_table_size = 64M
+
+# === Sort/Join Buffers ===
+sort_buffer_size = 4M
+join_buffer_size = 4M
+read_rnd_buffer_size = 4M

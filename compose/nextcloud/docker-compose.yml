@@ -18,8 +18,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: '0.5'
+          memory: 1536M
+          cpus: '1.0'
     command: --transaction-isolation=READ-COMMITTED --log-bin=binlog --binlog-format=ROW
     environment:
       MARIADB_ROOT_PASSWORD_FILE: /run/secrets/mariadb_root_password
@@ -31,6 +31,7 @@ services:
       - mariadb_nextcloud_password
     volumes:
       - ${DATA_DIR}/mariadb:/var/lib/mysql
+      - ./mariadb-tuning.cnf:/etc/mysql/mariadb.conf.d/99-opendesk.cnf:ro
     networks:
       - opendesk_db
     healthcheck:
@@ -53,15 +54,22 @@ services:
     deploy:
       resources:
         limits:
-          memory: 128M
-          cpus: '0.25'
+          memory: 256M
+          cpus: '0.5'
     entrypoint: ["/bin/sh", "-c"]
     # IMPORTANT: Use $$ before variable names to prevent Docker Compose
     # from interpolating them. $$ is the Compose escape for a literal $.
     command:
       - |
         REDIS_PASS=$$(cat /run/secrets/redis_nextcloud_password)
-        exec redis-server --requirepass "$$REDIS_PASS" --save "" --appendonly no
+        exec redis-server \
+          --requirepass "$$REDIS_PASS" \
+          --save "" \
+          --appendonly no \
+          --maxmemory 192mb \
+          --maxmemory-policy allkeys-lru \
+          --tcp-keepalive 300 \
+          --timeout 0
     secrets:
       - redis_nextcloud_password
     tmpfs:
@@ -93,20 +101,39 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1024M
-          cpus: '1.0'
+          memory: 2048M
+          cpus: '2.0'
     environment:
+      # --- Database ---
       MYSQL_HOST: nextcloud-db
       MYSQL_DATABASE: nextcloud
       MYSQL_USER: nextcloud
       MYSQL_PASSWORD_FILE: /run/secrets/mariadb_nextcloud_password
+      # --- Redis ---
       REDIS_HOST: nextcloud-redis
       REDIS_HOST_PASSWORD_FILE: /run/secrets/redis_nextcloud_password
+      # --- Domain & Proxy ---
       NEXTCLOUD_TRUSTED_DOMAINS: "${DOMAIN_CLOUD}"
       OVERWRITEPROTOCOL: https
       OVERWRITEHOST: ${DOMAIN_CLOUD}
+      TRUSTED_PROXIES: "172.31.1.0/24"
+      # --- Admin ---
       NEXTCLOUD_ADMIN_USER: admin
       NEXTCLOUD_ADMIN_PASSWORD_FILE: /run/secrets/nextcloud_admin_password
+      # --- PHP Memory & Upload ---
+      PHP_MEMORY_LIMIT: "1G"
+      PHP_UPLOAD_LIMIT: "1G"
+      PHP_MAX_EXECUTION_TIME: "3600"
+      APACHE_BODY_LIMIT: "1073741824"
+      # --- OPcache & JIT ---
+      PHP_OPCACHE_MEMORY_CONSUMPTION: "256"
+      PHP_OPCACHE_JIT: "1255"
+      PHP_OPCACHE_JIT_BUFFER_SIZE: "64M"
+      PHP_OPCACHE_REVALIDATE_FREQ: "0"
+      PHP_OPCACHE_VALIDATE_TIMESTAMPS: "0"
+      PHP_OPCACHE_INTERNED_STRINGS_BUFFER: "32"
+      PHP_OPCACHE_MAX_ACCELERATED_FILES: "20000"
+      PHP_OPCACHE_SAVE_COMMENTS: "1"
     secrets:
       - mariadb_nextcloud_password
       - mariadb_root_password
@@ -117,8 +144,11 @@ services:
       # Backchannel to Keycloak via Traefik (HTTP, no TLS needed)
       # See docs/NETWORK_ROUTING_OVERVIEW.md Section 8 for decision matrix
       - "${DOMAIN_IAM}:${HOST_IP}"
+      - "${DOMAIN_OFFICE}:${HOST_IP}"
     volumes:
       - ${DATA_DIR}/nextcloud:/var/www/html
+      - ./apcu.ini:/usr/local/etc/php/conf.d/zz-apcu-tuning.ini:ro
+      - ./opcache-tuning.ini:/usr/local/etc/php/conf.d/zz-opcache-tuning.ini:ro
     networks:
       - opendesk_db
       - opendesk_frontend
@@ -159,11 +189,29 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256M
-          cpus: '0.25'
+          memory: 512M
+          cpus: '0.5'
+    environment:
+      # --- PHP Tuning (same as main container) ---
+      PHP_MEMORY_LIMIT: "512M"
+      PHP_OPCACHE_MEMORY_CONSUMPTION: "256"
+      PHP_OPCACHE_JIT: "1255"
+      PHP_OPCACHE_JIT_BUFFER_SIZE: "64M"
+      PHP_OPCACHE_VALIDATE_TIMESTAMPS: "0"
+      PHP_OPCACHE_REVALIDATE_FREQ: "0"
+      PHP_OPCACHE_INTERNED_STRINGS_BUFFER: "32"
+      PHP_OPCACHE_MAX_ACCELERATED_FILES: "20000"
+      PHP_OPCACHE_SAVE_COMMENTS: "1"
+      # --- Redis (needed for cron background jobs) ---
+      REDIS_HOST: nextcloud-redis
+      REDIS_HOST_PASSWORD_FILE: /run/secrets/redis_nextcloud_password
+    secrets:
+      - redis_nextcloud_password
     entrypoint: /cron.sh
     volumes:
       - ${DATA_DIR}/nextcloud:/var/www/html
+      - ./apcu.ini:/usr/local/etc/php/conf.d/zz-apcu-tuning.ini:ro
+      - ./opcache-tuning.ini:/usr/local/etc/php/conf.d/zz-opcache-tuning.ini:ro
     networks:
       - opendesk_db
     depends_on:
@@ -171,6 +219,41 @@ services:
         condition: service_healthy
       nextcloud-redis:
         condition: service_healthy
+
+  notify_push:
+    image: nextcloud:31.0.13-apache
+    container_name: opendesk_nextcloud_push
+    restart: unless-stopped
+    user: "33:33"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    entrypoint: /var/www/html/custom_apps/notify_push/bin/x86_64/notify_push
+    command: /var/www/html/config/config.php
+    environment:
+      PORT: "7867"
+      NEXTCLOUD_URL: "http://nextcloud:80"
+    volumes:
+      - ${DATA_DIR}/nextcloud:/var/www/html:ro
+    networks:
+      - opendesk_db
+      - opendesk_frontend
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nextcloud-push.rule=Host(`${DOMAIN_CLOUD}`) && PathPrefix(`/push`)"
+      - "traefik.http.routers.nextcloud-push.entrypoints=websecure"
+      - "traefik.http.services.nextcloud-push.loadbalancer.server.port=7867"
 
 secrets:
   mariadb_root_password:

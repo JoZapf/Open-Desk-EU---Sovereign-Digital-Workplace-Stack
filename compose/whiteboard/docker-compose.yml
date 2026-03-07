@@ -1,0 +1,55 @@
+name: opendesk-whiteboard
+
+services:
+  whiteboard:
+    image: ghcr.io/nextcloud-releases/whiteboard:v1.5.7
+    container_name: opendesk_whiteboard
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - DAC_READ_SEARCH
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export JWT_SECRET_KEY=$$(cat /run/secrets/whiteboard_jwt_secret)
+        exec node websocket_server/main.js
+    environment:
+      NEXTCLOUD_URL: "https://${DOMAIN_CLOUD}"
+      STORAGE_STRATEGY: lru
+    extra_hosts:
+      # Whiteboard needs HTTPS access to Nextcloud for JWT validation
+      # Route through host nginx for TLS termination
+      - "${DOMAIN_CLOUD}:${HOST_IP}"
+    secrets:
+      - whiteboard_jwt_secret
+    networks:
+      - opendesk_frontend
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"const h=require('http');h.get('http://localhost:3002/',r=>{process.exit(r.statusCode<500?0:1)}).on('error',()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.whiteboard.rule=Host(`${DOMAIN_CLOUD}`) && PathPrefix(`/whiteboard`)"
+      - "traefik.http.routers.whiteboard.entrypoints=websecure"
+      - "traefik.http.routers.whiteboard.middlewares=whiteboard-strip@docker"
+      - "traefik.http.middlewares.whiteboard-strip.stripprefix.prefixes=/whiteboard"
+      - "traefik.http.services.whiteboard.loadbalancer.server.port=3002"
+
+secrets:
+  whiteboard_jwt_secret:
+    file: ../../secrets/whiteboard_jwt_secret
+
+networks:
+  opendesk_frontend:
+    external: true

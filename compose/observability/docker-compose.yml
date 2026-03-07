@@ -1,0 +1,118 @@
+name: opendesk-observability
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: opendesk_prometheus
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ${DATA_DIR}/prometheus:/prometheus
+    tmpfs:
+      - /tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - opendesk_backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: opendesk_grafana
+    restart: unless-stopped
+    user: "472:472"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_SERVER_HTTP_ADDR: "0.0.0.0"
+      GF_SERVER_HTTP_PORT: "3000"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - ${DATA_DIR}/grafana:/var/lib/grafana
+    tmpfs:
+      - /tmp
+      - /run
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    networks:
+      - opendesk_backend
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  netdata:
+    image: netdata/netdata:stable
+    container_name: opendesk_netdata
+    restart: unless-stopped
+    pid: host
+    network_mode: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1.0'
+    volumes:
+      - /etc/passwd:/host/etc/passwd:ro
+      - /etc/group:/host/etc/group:ro
+      - /etc/localtime:/etc/localtime:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /var/log:/host/var/log:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DATA_DIR}/netdata/config:/etc/netdata
+      - ${DATA_DIR}/netdata/lib:/var/lib/netdata
+      - ${DATA_DIR}/netdata/cache:/var/cache/netdata
+
+networks:
+  opendesk_backend:
+    external: true
+
+secrets:
+  grafana_admin_password:
+    file: ../../secrets/grafana_admin_password
