@@ -4,11 +4,10 @@ services:
     container_name: opendesk_traefik
     restart: unless-stopped
     # Adjust GID to match your docker group (id -g docker or getent group docker)
-    user: "1000:<docker-gid>"
+    user: "1000:984"
     read_only: true
     security_opt:
       - no-new-privileges:true
-    environment:
     cap_drop:
       - ALL
     deploy:
@@ -19,7 +18,7 @@ services:
     ports:
       # Bind to HOST_IP for LAN access during testing.
       # Change to 127.0.0.1 in production (traffic via upstream nginx).
-      - "${HOST_IP}:${TRAEFIK_PORT}:8443"
+      - "127.0.0.1:${TRAEFIK_PORT}:8443"
       - "127.0.0.1:${TRAEFIK_DASHBOARD_PORT}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro

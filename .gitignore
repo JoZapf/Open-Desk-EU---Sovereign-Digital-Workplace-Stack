@@ -22,8 +22,17 @@ docs/SESSION_HANDOFF_*
 verify-network-routing-*
 docs/verify-network-routing-*
 
-# Archive - needs review before publishing
-archive/
+# Project instructions (deployment-specific conventions, usernames)
+CLAUDE.md
 
-# Product Backlog - needs review before publishing
+# Archive/Scripts - contain deployment-specific values
+archive/
+scripts/ddns/
+scripts/keycloak/
+scripts/gather-network-info*
+
+# Documentation - needs review before publishing
 OPEN-DESK_Product_Backlog*
+docs/ADR-*
+docs/DNS*
+docs/NO_NEW_PRIVILEGES*

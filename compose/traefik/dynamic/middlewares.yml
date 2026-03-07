@@ -31,6 +31,24 @@ http:
         regex: "https://(.*)/.well-known/(?:card|cal)dav"
         replacement: "https://${1}/remote.php/dav"
         permanent: true
+    keycloak-headers:
+      headers:
+        contentTypeNosniff: true
+        browserXssFilter: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          X-Robots-Tag: "noindex, nofollow"
+          Permissions-Policy: "camera=(), microphone=(), geolocation=()"
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        stsPreload: true
+        forceSTSHeader: true
+    keycloak-chain:
+      chain:
+        middlewares:
+          - keycloak-headers
+          - rate-limit
+
     collabora-headers:
       headers:
         contentTypeNosniff: true

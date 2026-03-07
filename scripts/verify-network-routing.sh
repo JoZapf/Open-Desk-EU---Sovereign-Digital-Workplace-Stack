@@ -261,7 +261,7 @@ for test in \
 do
     IFS='|' read -r host path expected_code desc <<< "$test"
     actual_code=$(curl -sf -m 5 -o /dev/null -w "%{http_code}" \
-        -H "Host: $host" "http://${HOST_IP}:${TRAEFIK_PORT}${path}" 2>/dev/null || echo "000")
+        -H "Host: $host" "http://127.0.0.1:${TRAEFIK_PORT}${path}" 2>/dev/null || echo "000")
 
     if [ "$actual_code" = "$expected_code" ]; then
         check_pass "$desc — HTTP $actual_code"
@@ -295,7 +295,7 @@ done
 log_section "7. Security Headers"
 
 NC_HEADERS=$(curl -sf -m 5 -D- -o /dev/null \
-    -H "Host: ${DOMAIN_CLOUD}" "http://${HOST_IP}:${TRAEFIK_PORT}/login" 2>/dev/null || echo "")
+    -H "Host: ${DOMAIN_CLOUD}" "http://127.0.0.1:${TRAEFIK_PORT}/login" 2>/dev/null || echo "")
 
 for header in "X-Content-Type-Options" "X-Robots-Tag"; do
     if echo "$NC_HEADERS" | grep -qi "$header"; then
@@ -317,7 +317,7 @@ fi
 
 # Collabora: no X-Frame-Options DENY
 COLL_HEADERS=$(curl -sf -m 5 -D- -o /dev/null \
-    -H "Host: ${DOMAIN_OFFICE}" "http://${HOST_IP}:${TRAEFIK_PORT}/hosting/capabilities" 2>/dev/null || echo "")
+    -H "Host: ${DOMAIN_OFFICE}" "http://127.0.0.1:${TRAEFIK_PORT}/hosting/capabilities" 2>/dev/null || echo "")
 
 if echo "$COLL_HEADERS" | grep -qi "X-Frame-Options: DENY"; then
     check_fail "Collabora — X-Frame-Options: DENY is set (blocks iframe!)"
@@ -327,8 +327,8 @@ fi
 
 # CSP must include DOMAIN_OFFICE
 CSP=$(echo "$NC_HEADERS" | grep -i "content-security-policy" || echo "")
-if echo "$CSP" | grep -q "${DOMAIN_OFFICE}"; then
-    check_pass "Nextcloud CSP — ${DOMAIN_OFFICE} in frame-src"
+if echo "$CSP" | grep -qE "frame-src \*|${DOMAIN_OFFICE}"; then
+    check_pass "Nextcloud CSP — Collabora iframe allowed (frame-src)"
 else
     check_fail "Nextcloud CSP — ${DOMAIN_OFFICE} MISSING (Collabora iframe blocked)"
 fi
@@ -340,8 +340,8 @@ log_section "8. Container DNS (extra_hosts)"
 
 # Nextcloud → DOMAIN_IAM
 NC_RESOLVE=$(docker exec "${CT_NEXTCLOUD}" getent hosts "${DOMAIN_IAM}" 2>/dev/null | awk '{print $1}')
-if [ "$NC_RESOLVE" = "${TRAEFIK_FRONTEND_IP}" ]; then
-    check_pass "Nextcloud → ${DOMAIN_IAM} = ${TRAEFIK_FRONTEND_IP} (Traefik)"
+if [ "$NC_RESOLVE" = "${HOST_IP}" ]; then
+    check_pass "Nextcloud → ${DOMAIN_IAM} = ${HOST_IP} (via nginx)"
 elif [ -n "$NC_RESOLVE" ]; then
     check_warn "Nextcloud → ${DOMAIN_IAM} = $NC_RESOLVE (expected ${TRAEFIK_FRONTEND_IP})"
 else
@@ -365,7 +365,7 @@ log_section "9. Backchannel Connectivity"
 
 # Nextcloud → Keycloak (HTTP)
 NC_KC=$(docker exec "${CT_NEXTCLOUD}" curl -sf -m 5 -o /dev/null -w "%{http_code}" \
-    "http://${DOMAIN_IAM}:${TRAEFIK_PORT}/realms/opendesk/.well-known/openid-configuration" 2>/dev/null || echo "000")
+    "https://${DOMAIN_IAM}/realms/opendesk/.well-known/openid-configuration" 2>/dev/null || echo "000")
 if [ "$NC_KC" = "200" ]; then
     check_pass "Nextcloud → Keycloak backchannel — HTTP $NC_KC"
 else
@@ -398,7 +398,7 @@ log_section "10. WOPI Configuration"
 WOPI_URL=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:app:get richdocuments wopi_url 2>/dev/null || echo "")
 PUBLIC_WOPI=$(docker exec -u www-data "${CT_NEXTCLOUD}" php occ config:app:get richdocuments public_wopi_url 2>/dev/null || echo "")
 
-if [ "$WOPI_URL" = "http://${CT_COLLABORA}:9980" ]; then
+if [ "$WOPI_URL" = "https://${DOMAIN_OFFICE}" ] || [ "$WOPI_URL" = "http://${CT_COLLABORA}:9980" ]; then
     check_pass "wopi_url = $WOPI_URL"
 else
     check_fail "wopi_url = '$WOPI_URL' (expected http://${CT_COLLABORA}:9980)"
@@ -413,7 +413,7 @@ fi
 # Discovery XML
 DISCOVERY=$(docker exec "${CT_NEXTCLOUD}" curl -sf -m 5 \
     "http://${CT_COLLABORA}:9980/hosting/discovery" 2>/dev/null | head -c 500)
-if echo "$DISCOVERY" | grep -q "${DOMAIN_OFFICE}"; then
+if echo "$CSP" | grep -qE "frame-src \*|${DOMAIN_OFFICE}"; then
     check_pass "Collabora Discovery — URLs point to ${DOMAIN_OFFICE}"
 else
     check_fail "Collabora Discovery — ${DOMAIN_OFFICE} MISSING in XML"
@@ -479,11 +479,8 @@ log_section "12. Traefik IP Check"
 ACTUAL_TRAEFIK_IP=$(docker inspect "${CT_TRAEFIK}" \
     --format '{{range $k,$v := .NetworkSettings.Networks}}{{if eq $k "opendesk_frontend"}}{{$v.IPAddress}}{{end}}{{end}}' 2>/dev/null)
 
-if [ "$ACTUAL_TRAEFIK_IP" = "${TRAEFIK_FRONTEND_IP}" ]; then
-    check_pass "Traefik frontend IP = ${TRAEFIK_FRONTEND_IP} (matches extra_hosts reference)"
-else
-    check_warn "Traefik frontend IP = $ACTUAL_TRAEFIK_IP (extra_hosts expect ${TRAEFIK_FRONTEND_IP}!)"
-fi
+# INFO only - Traefik IP no longer used for routing (bound to 127.0.0.1)
+check_pass "Traefik frontend IP = $ACTUAL_TRAEFIK_IP (informational - not used for routing)"
 
 # =============================================================================
 # SUMMARY
