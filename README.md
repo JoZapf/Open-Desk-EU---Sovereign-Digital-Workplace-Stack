@@ -3,7 +3,7 @@
 Containerized, self-hosted digital workplace suite designed for EU data sovereignty. Deployed with Docker Compose behind Traefik reverse proxy, following Zero Trust principles with Defense-in-Depth security hardening.
 
 <p align="center">
-  <img src="Open-Desk-EU-Defense-in-Depth-Architecture_work_in_process.svg" width="1100" alt="Open-Desk-EU-Defense-in-Depth-Architecture_work_in_process.svg">
+  <img src="Open-Desk-EU-Defense-in-Depth-Architecture_work_in_process_v2.svg" width="1100" alt="Open-Desk-EU-Defense-in-Depth-Architecture_work_in_process.svg">
 </p>
 
 ## Architecture
