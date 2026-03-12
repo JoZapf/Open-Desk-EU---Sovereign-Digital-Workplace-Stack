@@ -12,3 +12,5 @@ networks:
     external: true
   opendesk_wopi:
     external: true
+  opendesk_latex_db:
+    external: true

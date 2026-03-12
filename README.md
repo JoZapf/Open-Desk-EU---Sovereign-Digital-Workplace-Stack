@@ -15,27 +15,30 @@ Internet → nginx (TLS termination) → Traefik (routing) → Service container
                                                            │   └── Whiteboard (real-time drawing)
                                                            ├── Keycloak 26.5 (SSO / OIDC identity provider)
                                                            ├── Collabora Online (document editing via WOPI)
+                                                           ├── Vaultwarden (password management)
+                                                           ├── Overleaf CE (LaTeX editor)
+                                                           │   ├── MongoDB 8.0 (document store)
+                                                           │   └── Redis 7 (session cache)
                                                            ├── Prometheus + Grafana (metrics & dashboards)
                                                            ├── Netdata (real-time system monitoring)
+                                                           ├── Wiki (Material for MkDocs)
                                                            ├── Rocket.Chat (messaging) [planned]
-                                                           ├── Jitsi Meet (video conferencing) [planned]
-                                                           ├── OpenProject (project management) [planned]
-                                                           └── Vaultwarden (password management) [planned]
+                                                           └── Jitsi Meet (video conferencing) [planned]
 ```
 
 ## Security
 
-All services follow the container hardening baseline documented in [`docs/CONTAINER_HARDENING_BASELINE.md`](docs/CONTAINER_HARDENING_BASELINE.md). Full security architecture and audit results are documented in [`SECURITY.md`](SECURITY.md).
+Full security architecture and audit results are documented in [`SECURITY.md`](SECURITY.md).
 
 Key principles:
 
-- **Network Segmentation** — 5 isolated Docker networks; database and WOPI networks are fully internal (no internet access)
-- **Least Privilege** — `cap_drop: ALL` on every container, minimal `cap_add` per service; `no-new-privileges` per container (documented exceptions for Collabora and Netdata)
-- **Secrets as Files** — Docker Compose `secrets:` block, no plaintext credentials in compose files or environment variables
+- **Network Segmentation** — 6 isolated Docker networks; database, WOPI, and LaTeX-DB networks are fully internal (no internet access)
+- **Least Privilege** — `cap_drop: ALL` on every container, minimal `cap_add` per service; `no-new-privileges` per container (documented exceptions for Collabora, Netdata, and Overleaf)
+- **Secrets as Files** — Docker Compose `secrets:` block, no plaintext credentials in compose files
 - **Immutable Infrastructure** — Read-only filesystems where possible, explicit tmpfs for runtime data
 - **Centralized IAM** — Keycloak OIDC with Authorization Code Flow + PKCE for all services
 - **Host Intrusion Prevention** — CrowdSec with geoblocking and community threat intelligence
-- **Automated Verification** — [`scripts/verify-network-routing.sh`](scripts/verify-network-routing.sh) validates ports, networks, routing, headers, WOPI, and DNS
+- **Repository Hygiene** — All secrets, credentials, and infrastructure-identifying data (domains, IPs, usernames, zone IDs) are excluded from version control via `.gitignore`
 
 ## Repository Structure
 
@@ -45,57 +48,57 @@ compose/
 ├── keycloak/         Identity provider (production build) + PostgreSQL
 ├── nextcloud/        File sync + MariaDB + Redis + Cron + notify_push
 ├── collabora/        Document editing (CODE) + seccomp profile
+├── latex/            LaTeX editor (Overleaf CE) + MongoDB + Redis
+├── vaultwarden/      Password manager
 ├── whiteboard/       Real-time collaborative whiteboard (WebSocket)
-└── observability/    Prometheus + Grafana + Netdata
-docs/                 Architecture decisions, hardening baseline, network routing, performance tuning
+├── observability/    Prometheus + Grafana + Netdata
+└── mkdocs/           Wiki (Material for MkDocs, oauth2-proxy + nginx)
+wiki/                 MkDocs source files (Markdown + mkdocs.yml)
 secrets/              Credential files (git-ignored, chmod 700)
 scripts/              Verification, backup, deployment, DDNS scripts
 docker-compose.yml    Root orchestrator (network definitions)
+.env.example          Template for deployment-specific configuration
 ```
+
+> **Note:** Directories containing deployment-specific values (secrets, environment files, compose files with hardcoded domains, scripts with zone IDs, documentation with infrastructure details) are excluded from this repository via `.gitignore`. See [Configuration](#configuration) for setup instructions.
 
 ## Project Status
 
 | Component | Status |
 |---|---|
-| Host Security (firewall, auditd, CrowdSec) | ✅ Complete |
-| Docker Network Segmentation | ✅ 5 networks, DB + WOPI internal |
-| Traefik Reverse Proxy | ✅ Security headers, rate limiting, HSTS |
-| Keycloak 26.5 IAM | ✅ Production build, OIDC clients, 2FA (TOTP + WebAuthn) |
-| Nextcloud 31 | ✅ OIDC SSO, performance-tuned (OPcache/JIT, APCu, InnoDB) |
-| Nextcloud High Performance Backend | ✅ notify_push (WebSocket push notifications) |
-| Collabora Online | ✅ WOPI integration, document editing, seccomp-sandboxed |
-| Whiteboard | ✅ Real-time collaborative drawing via WebSocket |
-| Observability (Prometheus + Grafana + Netdata) | ✅ Metrics collection + dashboards |
-| TLS (Let's Encrypt) | ⏳ Planned for DNS go-live |
-| Rocket.Chat | ⏳ Planned |
-| Jitsi Meet | ⏳ Planned |
-| OpenProject | ⏳ Planned |
-| Vaultwarden | ⏳ Planned |
+| Host Security (firewall, auditd, CrowdSec) | Complete |
+| Docker Network Segmentation | 6 networks, DB + WOPI + LaTeX-DB internal |
+| Traefik Reverse Proxy | Security headers, rate limiting, HSTS |
+| Keycloak 26.5 IAM | Production build, OIDC clients, 2FA (TOTP + WebAuthn) |
+| Nextcloud 31 | OIDC SSO, performance-tuned (OPcache/JIT, APCu, InnoDB) |
+| Nextcloud High Performance Backend | notify_push (WebSocket push notifications) |
+| Collabora Online | WOPI integration, document editing, seccomp-sandboxed |
+| Whiteboard | Real-time collaborative drawing via WebSocket |
+| Vaultwarden | Password management, Keycloak SSO |
+| Overleaf CE (LaTeX) | Browser-based LaTeX editor, MongoDB replica set |
+| Observability (Prometheus + Grafana + Netdata) | Metrics collection + dashboards |
+| Wiki (Material for MkDocs) | Static site, Keycloak-protected via oauth2-proxy |
+| TLS (Let's Encrypt) | Planned for DNS go-live |
+| Rocket.Chat | Planned |
+| Jitsi Meet | Planned |
 
 ## Technology Stack
 
-- **Containerization:** Docker + Docker Compose (13 containers across 6 compose projects)
+- **Containerization:** Docker + Docker Compose (~18 containers across 8 compose projects)
 - **Reverse Proxy:** Traefik v3 with automatic service discovery
 - **Identity Management:** Keycloak 26.5 (OIDC / OAuth 2.0, production build)
 - **File Sync:** Nextcloud 31 with Redis caching + notify_push
 - **Document Editing:** Collabora Online (CODE) via WOPI protocol
+- **LaTeX:** Overleaf Community Edition (browser-based LaTeX IDE) + MongoDB 8.0 + Redis 7
+- **Password Management:** Vaultwarden (Bitwarden-compatible)
 - **Real-time Collaboration:** Whiteboard (Excalidraw-based, WebSocket)
-- **Databases:** PostgreSQL 16 (Keycloak), MariaDB 11 (Nextcloud, InnoDB-tuned)
+- **Databases:** PostgreSQL 16 (Keycloak), MariaDB 11 (Nextcloud), MongoDB 8.0 (Overleaf)
 - **Caching:** Redis 7 (session + file locking), APCu (local PHP object cache)
 - **Monitoring:** Prometheus + Grafana (metrics), Netdata (real-time), auditd (host audit)
+- **Wiki:** Material for MkDocs (static site generator) + oauth2-proxy (OIDC authentication)
 - **Host Security:** CrowdSec (IPS with geoblocking), UFW (firewall)
+- **Backup:** BorgBackup (segmented pipeline with pre/post hooks, encrypted, deduplicated)
 - **Host OS:** Ubuntu Server
-
-## Key Documentation
-
-| Document | Purpose |
-|---|---|
-| [`SECURITY.md`](SECURITY.md) | Full security architecture, container audit, secrets management |
-| [`docs/NETWORK_ROUTING_OVERVIEW.md`](docs/NETWORK_ROUTING_OVERVIEW.md) | Authoritative reference for port, routing, and DNS decisions |
-| [`docs/CONTAINER_HARDENING_BASELINE.md`](docs/CONTAINER_HARDENING_BASELINE.md) | Mandatory security directives for every container |
-| [`docs/NEXTCLOUD_PERFORMANCE_OPTIMIZATION.md`](docs/NEXTCLOUD_PERFORMANCE_OPTIMIZATION.md) | Performance tuning concept (OPcache, InnoDB, Redis, notify_push) |
-| [`scripts/verify-network-routing.sh`](scripts/verify-network-routing.sh) | Automated infrastructure verification script |
-| [`.env.example`](.env.example) | Template for deployment-specific configuration |
 
 ## Configuration
 
@@ -111,12 +114,11 @@ cp .env.example .env
 | `DOMAIN_CLOUD` | Nextcloud domain | `cloud.example.com` |
 | `DOMAIN_IAM` | Keycloak domain | `id.example.com` |
 | `DOMAIN_OFFICE` | Collabora domain | `office.example.com` |
+| `DOMAIN_DOCS` | Wiki domain | `docs.example.com` |
+| `DOMAIN_LATEX` | Overleaf domain | `latex.example.com` |
 | `HOST_IP` | Server LAN IP (for port bindings and WOPI routing) | `192.168.1.100` |
 | `LAN_SUBNET` | Local network CIDR | `192.168.1.0/24` |
-| `TRAEFIK_PORT` | Traefik HTTPS entrypoint (host-side) | `8443` |
-| `NET_FRONTEND` .. `NET_WOPI` | Docker network subnets | `172.31.1.0/24` .. `172.31.5.0/24` |
 | `DATA_DIR` | Base path for persistent volumes | `/srv/opendesk-data` |
-| `GRAFANA_PORT` | Grafana dashboard (localhost only) | `3000` |
 
 See [`.env.example`](.env.example) for the complete template with all variables and defaults.
 
@@ -132,26 +134,38 @@ mkdir -p secrets && chmod 700 secrets
 # Generate credentials — see .env.example for the full list
 
 # 3. Create data directories
-sudo mkdir -p /srv/opendesk-data/{keycloak/db,mariadb,nextcloud,prometheus,grafana}
+sudo mkdir -p /srv/opendesk-data/{keycloak/db,mariadb,nextcloud,prometheus,grafana,latex/{data,mongo,redis}}
 sudo chmod 700 /srv/opendesk-data
 
-# 4. Create Docker networks (see docs/NETWORK_ROUTING_OVERVIEW.md)
-for net in opendesk_frontend opendesk_backend opendesk_db opendesk_mail opendesk_wopi; do
-  docker network create "$net" --subnet <see .env.example>
-done
-# Mark DB and WOPI as internal (no internet access)
+# 4. Create Docker networks (see SECURITY.md for subnet details)
+# 6 networks: frontend, backend, db, mail, wopi, latex_db
+# Mark db, wopi, and latex_db as internal (no internet access)
 
 # 5. Deploy services (order matters)
 docker compose --env-file .env -f compose/traefik/docker-compose.yml up -d
 docker compose --env-file .env -f compose/keycloak/docker-compose.yml up -d
 docker compose --env-file .env -f compose/nextcloud/docker-compose.yml up -d
 docker compose --env-file .env -f compose/collabora/docker-compose.yml up -d
+docker compose --env-file .env -f compose/vaultwarden/docker-compose.yml up -d
+docker compose --env-file .env -f compose/latex/docker-compose.yml up -d
 docker compose --env-file .env -f compose/whiteboard/docker-compose.yml up -d
 docker compose --env-file .env -f compose/observability/docker-compose.yml up -d
-
-# 6. Verify
-bash scripts/verify-network-routing.sh
+docker compose --env-file .env -f compose/mkdocs/docker-compose.yml up -d
 ```
+
+## What's Not in This Repo
+
+This is a public repository. The following categories are excluded via `.gitignore` to protect infrastructure identity:
+
+| Category | Examples | Why excluded |
+|---|---|---|
+| Secrets | Passwords, tokens, API keys | Security |
+| Environment | `.env` with domains, IPs, credentials | Infrastructure identity |
+| Sensitive compose files | Files with hardcoded SMTP addresses, redirect URLs | Infrastructure identity |
+| Scripts with infrastructure values | DDNS zone IDs, domain-specific logic | Infrastructure identity |
+| Documentation with infrastructure details | Runbooks, wiki docs, architecture docs with concrete IPs/domains | Infrastructure identity |
+
+The architecture, patterns, and generic configuration remain public. Only values that make this specific installation identifiable or mappable are excluded.
 
 ## License
 

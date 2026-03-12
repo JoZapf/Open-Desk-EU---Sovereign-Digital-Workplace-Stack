@@ -1,6 +1,6 @@
 # Security Architecture — Open-Desk EU
 
-**Last updated:** 2026-03-07
+**Last updated:** 2026-03-12
 **Project:** Open-Desk EU — Sovereign Digital Workplace Stack
 
 ---
@@ -52,7 +52,7 @@ auditd monitors security-critical Docker files (socket and daemon configuration)
 
 ### 3.1 Docker Networks
 
-Five isolated bridge networks with fixed subnets:
+Six isolated bridge networks with fixed subnets:
 
 | Network | Internal | Purpose |
 |---|---|---|
@@ -61,26 +61,31 @@ Five isolated bridge networks with fixed subnets:
 | Database | **Yes** | Database access (no internet connectivity) |
 | Mail | No | Email delivery (planned) |
 | WOPI | **Yes** | Collabora ↔ Nextcloud (no internet connectivity) |
+| LaTeX DB | **Yes** | Overleaf ↔ MongoDB + Redis (no internet connectivity) |
 
 `internal: true` means containers in this network have no internet access and are unreachable from outside. Only containers explicitly attached to the same network can communicate.
 
 ### 3.2 Container Network Assignment
 
-| Container | Frontend | Backend | Database | WOPI | Rationale |
-|---|---|---|---|---|---|
-| Traefik | ✅ | ✅ | — | — | Reverse proxy, reaches routable services |
-| Keycloak | ✅ | ✅ | ✅ | — | Frontend (routing), backend (OIDC), DB |
-| Keycloak DB | — | — | ✅ | — | Database access only |
-| Nextcloud | ✅ | — | ✅ | ✅ | Frontend (routing), DB, WOPI (Collabora) |
-| Nextcloud DB | — | — | ✅ | — | Database access only |
-| Nextcloud Redis | — | — | ✅ | — | Cache access from database network only |
-| Nextcloud Cron | — | — | ✅ | — | Background jobs, DB + Redis access |
-| notify_push | ✅ | — | ✅ | — | WebSocket push, needs DB (Redis) + frontend |
-| Collabora | ✅ | — | — | ✅ | Frontend (routing) + WOPI (Nextcloud) |
-| Whiteboard | ✅ | — | — | — | Frontend only (WebSocket via Traefik) |
-| Prometheus | — | ✅ | — | — | Backend only (scrapes metrics) |
-| Grafana | — | ✅ | — | — | Backend only (queries Prometheus) |
-| Netdata | host | host | host | host | Host network mode (system monitoring) |
+| Container | Frontend | Backend | Database | WOPI | LaTeX DB | Rationale |
+|---|---|---|---|---|---|---|
+| Traefik | x | x | — | — | — | Reverse proxy, reaches routable services |
+| Keycloak | x | x | x | — | — | Frontend (routing), backend (OIDC), DB |
+| Keycloak DB | — | — | x | — | — | Database access only |
+| Nextcloud | x | — | x | x | — | Frontend (routing), DB, WOPI (Collabora) |
+| Nextcloud DB | — | — | x | — | — | Database access only |
+| Nextcloud Redis | — | — | x | — | — | Cache access from database network only |
+| Nextcloud Cron | — | — | x | — | — | Background jobs, DB + Redis access |
+| notify_push | x | — | x | — | — | WebSocket push, needs DB (Redis) + frontend |
+| Collabora | x | — | — | x | — | Frontend (routing) + WOPI (Nextcloud) |
+| Whiteboard | x | — | — | — | — | Frontend only (WebSocket via Traefik) |
+| Vaultwarden | x | — | — | — | — | Frontend (routing), SQLite (local) |
+| Overleaf | x | — | — | — | x | Frontend (routing) + LaTeX DB |
+| Overleaf MongoDB | — | — | — | — | x | LaTeX DB access only |
+| Overleaf Redis | — | — | — | — | x | LaTeX DB access only |
+| Prometheus | — | x | — | — | — | Backend only (scrapes metrics) |
+| Grafana | — | x | — | — | — | Backend only (queries Prometheus) |
+| Netdata | host | host | host | host | host | Host network mode (system monitoring) |
 
 ### 3.3 Ingress Architecture
 
@@ -96,35 +101,40 @@ Monitoring dashboards (Grafana, Netdata) are bound to localhost only and accessi
 
 ## 4. Container Hardening Baseline
 
-### 4.1 Audit Results (2026-03-07)
+### 4.1 Audit Results (2026-03-12)
 
-All 13 containers were audited against the hardening baseline:
+All containers were audited against the hardening baseline:
 
 | Container | NoNewPrivs | CapDrop ALL | Minimal CapAdd | ReadOnly | Memory Limit | CPU Limit |
 |---|---|---|---|---|---|---|
-| Traefik | ✅ | ✅ | None | ✅ | ✅ | ✅ |
-| Keycloak | ✅ | ✅ | DAC_READ_SEARCH | ❌ | ✅ (1024M) | ✅ |
-| Keycloak DB | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ (256M) | ✅ |
-| Nextcloud | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH, NET_BIND_SERVICE | ❌ | ✅ (2048M) | ✅ |
-| Nextcloud DB | ✅ | ✅ | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ (1536M) | ✅ |
-| Nextcloud Redis | ✅ | ✅ | DAC_READ_SEARCH | ✅ | ✅ (256M) | ✅ |
-| Nextcloud Cron | ✅ | ✅ | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | ❌ | ✅ (512M) | ✅ |
-| notify_push | ✅ | ✅ | DAC_READ_SEARCH | ❌ ¹ | ✅ (256M) | ✅ |
-| Collabora | ❌ ² | ✅ | SYS_CHROOT, FOWNER, CHOWN, MKNOD | ❌ | ✅ (1536M) | ✅ |
-| Whiteboard | ✅ | ✅ | DAC_READ_SEARCH | ❌ | ✅ (256M) | ✅ |
-| Prometheus | ✅ | ✅ | None | ✅ | ✅ (512M) | ✅ |
-| Grafana | ✅ | ✅ | None | ✅ | ✅ (256M) | ✅ |
-| Netdata | ❌ ³ | ❌ ³ | SYS_PTRACE, SYS_ADMIN | ❌ | ✅ (512M) | ✅ |
+| Traefik | x | x | None | x | x | x |
+| Keycloak | x | x | DAC_READ_SEARCH | — | x (1024M) | x |
+| Keycloak DB | x | x | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | — | x (256M) | x |
+| Nextcloud | x | x | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH, NET_BIND_SERVICE | — | x (2048M) | x |
+| Nextcloud DB | x | x | CHOWN, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | — | x (1536M) | x |
+| Nextcloud Redis | x | x | DAC_READ_SEARCH | x | x (256M) | x |
+| Nextcloud Cron | x | x | CHOWN, DAC_OVERRIDE, FOWNER, SETUID, SETGID, DAC_READ_SEARCH | — | x (512M) | x |
+| notify_push | x | x | DAC_READ_SEARCH | — ¹ | x (256M) | x |
+| Collabora | — ² | x | SYS_CHROOT, FOWNER, CHOWN, MKNOD | — | x (1536M) | x |
+| Whiteboard | x | x | DAC_READ_SEARCH | — | x (256M) | x |
+| Vaultwarden | x | x | None | — | x (256M) | x |
+| Overleaf | — ³ | x | CHOWN, SETUID, SETGID, DAC_OVERRIDE | — | x (2048M) | x |
+| Overleaf MongoDB | x | x | CHOWN, SETUID, SETGID | — | x (512M) | x |
+| Overleaf Redis | x | x | CHOWN, SETUID, SETGID | x | x (128M) | x |
+| Prometheus | x | x | None | x | x (512M) | x |
+| Grafana | x | x | None | x | x (256M) | x |
+| Netdata | — ⁴ | — ⁴ | SYS_PTRACE, SYS_ADMIN | — | x (512M) | x |
 
 ¹ Volume mounted read-only (`:ro`)
 ² Documented exception — Collabora uses Linux file capabilities (`setcap`) for jail setup, which requires `no-new-privileges` to be disabled. Compensated by custom seccomp profile, WOPI network isolation, and `cap_drop: ALL`.
-³ Documented exception — Netdata requires host-level access for system monitoring (`pid: host`, `network_mode: host`). Mitigated by localhost-only access (SSH tunnel), read-only host mounts, and memory/CPU limits.
+³ Documented exception — Overleaf uses Phusion baseimage with `my_init`, which requires `setuid()`/`setgid()` to start services under different user contexts (www-data, node). Compensated by `cap_drop: ALL`, isolated LaTeX DB network (`internal: true`), no Docker socket access, memory/CPU limits.
+⁴ Documented exception — Netdata requires host-level access for system monitoring (`pid: host`, `network_mode: host`). Mitigated by localhost-only access (SSH tunnel), read-only host mounts, and memory/CPU limits.
 
 ### 4.2 Assessment
 
-**12/13 containers** comply with all critical controls (`no-new-privileges`, `cap_drop: ALL`, memory/CPU limits). Collabora and Netdata are documented exceptions with compensating controls.
+**14/17 containers** comply with all critical controls (`no-new-privileges`, `cap_drop: ALL`, memory/CPU limits). Collabora, Overleaf, and Netdata are documented exceptions with compensating controls.
 
-**Read-only filesystem:** Traefik, Redis, Prometheus, and Grafana run with `read_only: true` (4/13). Databases, application servers, and monitoring agents require filesystem write access — documented exceptions per the hardening baseline.
+**Read-only filesystem:** Traefik, Nextcloud Redis, Overleaf Redis, Prometheus, and Grafana run with `read_only: true` (5/17). Databases, application servers, and monitoring agents require filesystem write access — documented exceptions per the hardening baseline.
 
 **Capabilities:** Each container receives only the minimum required capabilities. `cap_drop: ALL` removes all Linux capabilities first; `cap_add` selectively restores only those needed by the respective process.
 
@@ -146,9 +156,20 @@ Secrets inside containers are owned by the host user with permissions `600`. Onl
 
 For services that do not natively support `_FILE` suffixes (Keycloak, Redis, Whiteboard), a shell wrapper is used as entrypoint to read the secret file and pass the value via environment variable to the service process.
 
-### 5.3 Git Security
+### 5.3 Repository Hygiene
 
-The `.gitignore` excludes all sensitive paths: secret files, environment files, runbooks containing terminal output, and archive directories pending review.
+This is a public repository. The `.gitignore` protects all data that makes the installation identifiable or mappable:
+
+| Category | Paths | Content |
+|---|---|---|
+| Secrets | `secrets/` | Passwords, tokens, API keys |
+| Environment | `.env`, `*.env`, `.env.*` | Domains, IPs, subnets, credentials |
+| Project instructions | `CLAUDE.md` | Infrastructure details, admin users |
+| Sensitive compose files | `compose/vaultwarden/`, `compose/collabora/`, `compose/latex/`, `compose/traefik/dynamic/middlewares.yml` | SMTP addresses, redirect URLs, domains |
+| Sensitive scripts | `scripts/ddns/`, `scripts/keycloak/`, `scripts/gather-network-info*`, `scripts/verify-network-routing*` | Zone IDs, domains, IPs |
+| Documentation | `wiki/docs/`, `docs/`, `RUNBOOK*`, `OPEN-DESK_Product_Backlog*` | Network topology, pentest reports, infrastructure details |
+
+**What remains public:** Architecture patterns, generic compose structures, network design, hardening baseline, `.env.example` template — everything needed to understand and replicate the approach without revealing the specific deployment.
 
 ### 5.4 Application Config — Risk Assessment
 
@@ -193,7 +214,7 @@ Previously resolved:
 
 | Category | Resolution |
 |---|---|
-| Identity provider running in development mode | ✅ Switched to production build (`start --optimized`, multi-stage Dockerfile) |
+| Identity provider running in development mode | Switched to production build (`start --optimized`, multi-stage Dockerfile) |
 
 ---
 
@@ -221,11 +242,11 @@ Identity Provider → ID Token + Access Token → Application → Session create
 
 | Check | Status |
 |---|---|
-| OIDC Discovery endpoint reachable (container-internal) | ✅ |
-| Issuer URL consistent (internal = external) | ✅ |
-| Authorization request parameters validated (incl. PKCE) | ✅ |
-| End-to-end browser login with SSO | ✅ |
-| Identity provider running in production mode | ✅ |
+| OIDC Discovery endpoint reachable (container-internal) | Verified |
+| Issuer URL consistent (internal = external) | Verified |
+| Authorization request parameters validated (incl. PKCE) | Verified |
+| End-to-end browser login with SSO | Verified |
+| Identity provider running in production mode | Verified |
 
 ---
 
@@ -264,25 +285,26 @@ Performance tuning is applied with security constraints maintained:
 
 | Layer | Control | Status |
 |---|---|---|
-| **Host** | Firewall deny-by-default | ✅ |
-| **Host** | Docker `no-new-privileges` global | ✅ |
-| **Host** | auditd monitoring | ✅ |
-| **Host** | CrowdSec IPS + geoblocking | ✅ |
-| **Network** | 5 isolated Docker networks | ✅ |
-| **Network** | Database + WOPI networks fully internal | ✅ |
-| **Network** | Reverse proxy bound to loopback only | ✅ |
-| **Network** | Monitoring bound to localhost (SSH tunnel) | ✅ |
-| **Container** | `cap_drop: ALL` + minimal `cap_add` | ✅ (13/13) |
-| **Container** | `no-new-privileges` per container | ✅ (11/13, 2 documented exceptions) |
-| **Container** | Memory/CPU limits | ✅ (13/13) |
-| **Container** | Read-only filesystem (where possible) | ✅ (4/13, rest documented exceptions) |
-| **Container** | Healthchecks | ✅ (13/13) |
-| **Container** | Seccomp profile (Collabora) | ✅ |
-| **Secrets** | File-based, restrictive permissions | ✅ |
-| **Secrets** | No plaintext credentials in compose | ✅ |
-| **Secrets** | Git protection (.gitignore) | ✅ |
-| **IAM** | OIDC with PKCE + Authorization Code Flow | ✅ |
-| **IAM** | Centralized identity management (Keycloak) | ✅ |
-| **IAM** | 2FA (TOTP + WebAuthn) for admin accounts | ✅ |
-| **TLS** | End-to-end encryption | ⏳ (Let's Encrypt at DNS go-live) |
-| **Production** | Secret rotation | ⏳ |
+| **Host** | Firewall deny-by-default | Verified |
+| **Host** | Docker `no-new-privileges` global | Verified |
+| **Host** | auditd monitoring | Verified |
+| **Host** | CrowdSec IPS + geoblocking | Verified |
+| **Network** | 6 isolated Docker networks | Verified |
+| **Network** | Database + WOPI + LaTeX-DB networks fully internal | Verified |
+| **Network** | Reverse proxy bound to loopback only | Verified |
+| **Network** | Monitoring bound to localhost (SSH tunnel) | Verified |
+| **Container** | `cap_drop: ALL` + minimal `cap_add` | Verified (17/17) |
+| **Container** | `no-new-privileges` per container | Verified (14/17, 3 documented exceptions) |
+| **Container** | Memory/CPU limits | Verified (17/17) |
+| **Container** | Read-only filesystem (where possible) | Verified (5/17, rest documented exceptions) |
+| **Container** | Healthchecks | Verified (17/17) |
+| **Container** | Seccomp profile (Collabora) | Verified |
+| **Secrets** | File-based, restrictive permissions | Verified |
+| **Secrets** | No plaintext credentials in compose | Verified |
+| **Secrets** | Git protection (.gitignore) | Verified |
+| **Secrets** | Infrastructure identity excluded from repo | Verified |
+| **IAM** | OIDC with PKCE + Authorization Code Flow | Verified |
+| **IAM** | Centralized identity management (Keycloak) | Verified |
+| **IAM** | 2FA (TOTP + WebAuthn) for admin accounts | Verified |
+| **TLS** | End-to-end encryption | Planned (Let's Encrypt at DNS go-live) |
+| **Production** | Secret rotation | Planned |

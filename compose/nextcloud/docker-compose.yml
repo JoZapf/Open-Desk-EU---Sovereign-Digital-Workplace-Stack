@@ -149,6 +149,8 @@ services:
       - ${DATA_DIR}/nextcloud:/var/www/html
       - ./apcu.ini:/usr/local/etc/php/conf.d/zz-apcu-tuning.ini:ro
       - ./opcache-tuning.ini:/usr/local/etc/php/conf.d/zz-opcache-tuning.ini:ro
+      # Wiki-Quelldateien fuer External Storage (bearbeitbar via Nextcloud Text-App)
+      - ../../wiki/docs:/mnt/wiki-docs
     networks:
       - opendesk_db
       - opendesk_frontend
