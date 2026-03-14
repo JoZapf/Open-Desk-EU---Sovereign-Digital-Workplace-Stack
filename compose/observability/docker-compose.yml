@@ -38,6 +38,65 @@ services:
       retries: 3
       start_period: 15s
 
+  loki:
+    image: grafana/loki:3.4
+    container_name: opendesk_loki
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    command:
+      - '-config.file=/etc/loki/loki.yml'
+    volumes:
+      - ./loki.yml:/etc/loki/loki.yml:ro
+      - ${DATA_DIR}/loki:/loki
+    tmpfs:
+      - /tmp
+    networks:
+      - opendesk_backend
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3100/ready"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  promtail:
+    image: grafana/promtail:3.4
+    container_name: opendesk_promtail
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+    command:
+      - '-config.file=/etc/promtail/promtail.yml'
+    volumes:
+      - ./promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DATA_DIR}/promtail:/var/lib/promtail
+    tmpfs:
+      - /tmp
+    networks:
+      - opendesk_backend
+    depends_on:
+      loki:
+        condition: service_healthy
+
   grafana:
     image: grafana/grafana:latest
     container_name: opendesk_grafana
@@ -64,6 +123,9 @@ services:
       - grafana_admin_password
     volumes:
       - ${DATA_DIR}/grafana:/var/lib/grafana
+      - ./grafana-provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana-provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana-dashboards:/var/lib/grafana/dashboards:ro
     tmpfs:
       - /tmp
       - /run
@@ -73,6 +135,8 @@ services:
       - opendesk_backend
     depends_on:
       prometheus:
+        condition: service_healthy
+      loki:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]

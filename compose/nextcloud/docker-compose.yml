@@ -209,11 +209,15 @@ services:
       REDIS_HOST_PASSWORD_FILE: /run/secrets/redis_nextcloud_password
     secrets:
       - redis_nextcloud_password
-    entrypoint: /cron.sh
+    entrypoint: /usr/local/bin/entrypoint-cron-with-shadow.sh
     volumes:
       - ${DATA_DIR}/nextcloud:/var/www/html
       - ./apcu.ini:/usr/local/etc/php/conf.d/zz-apcu-tuning.ini:ro
       - ./opcache-tuning.ini:/usr/local/etc/php/conf.d/zz-opcache-tuning.ini:ro
+      # Talk Shadow-Backup (US-031)
+      - ${DATA_DIR}/talk-shadow-backup:/mnt/talk-shadow
+      - ../../scripts/opendesk-nc-talk-shadow.sh:/usr/local/bin/opendesk-nc-talk-shadow.sh:ro
+      - ../../scripts/entrypoint-cron-with-shadow.sh:/usr/local/bin/entrypoint-cron-with-shadow.sh:ro
     networks:
       - opendesk_db
     depends_on:

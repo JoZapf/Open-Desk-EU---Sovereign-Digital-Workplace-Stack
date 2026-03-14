@@ -1,60 +1,43 @@
-# =============================================================================
 # Open-Desk EU — .gitignore
-# =============================================================================
-# Schuetzt sensible Daten vor Veroeffentlichung im Public Repo.
-# Definition "sensibel": Alles, was die konkrete Installation identifizierbar
-# oder kartierbar macht (Secrets, Domains, IPs, Usernamen, Zone-IDs).
-# Architektur-Pattern und generische Konfiguration bleiben oeffentlich.
-#
 # Restore: ./scripts/secrets-manage.sh unseal <keyfile>
-# =============================================================================
 
-# --- Secrets (Passwoerter, Tokens, API-Keys) ---
 secrets/
 
-# --- Environment (Domains, IPs, Subnets, Credentials) ---
 .env
 *.env
 .env.*
 !.env.example
 
-# --- Project Instructions (Domains, IPs, Usernamen, Workflows) ---
 CLAUDE.md
 
-# --- Wiki (durchgehend konkrete Domains, IPs, Usernamen) ---
 wiki/docs/
 wiki/mkdocs.yml
 wiki/site/
 
-# --- Scripts mit hardcodierten Infrastruktur-Werten ---
 scripts/ddns/
 scripts/keycloak/
 scripts/gather-network-info*
 scripts/verify-network-routing*
+scripts/opendesk-vault-pentest.sh
+scripts/opendesk-nc-dbdump.sh
 
-# --- Compose-Dateien mit hardcodierten Domains ---
-# (SMTP-Adressen, Redirect-URLs, Aliasgruppen)
 compose/vaultwarden/
 compose/collabora/
 compose/latex/
+compose/mkdocs/
+compose/coraza/
 compose/traefik/dynamic/middlewares.yml
 
-# --- Dokumentation mit Infrastruktur-Details ---
 RUNBOOK*
 OPEN-DESK_Product_Backlog*
 docs/
 SESSION_HANDOFF_*
 
-# --- Generierte Berichte ---
 verify-network-routing-*
 
-# --- Datenverzeichnisse ---
 data/
 archive/
+temp-chat*
 
-# --- Chat-Migration (persoenliche Daten, Fotos, Namen) ---
-temp-chat-migration/
-
-# --- Compiled/Cache ---
 __pycache__/
 *.pyc

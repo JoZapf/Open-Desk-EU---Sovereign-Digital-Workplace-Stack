@@ -1,0 +1,245 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "title": "Requests / Minute",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 30,
+            "lineWidth": 2,
+            "spanNulls": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "blocked" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "passed" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status=~\"403\" [1m]))",
+          "legendFormat": "blocked",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status!~\"403\" | status!=\"\" [1m]))",
+          "legendFormat": "passed",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Blocked vs Passed (Gesamt)",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "blocked" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "passed" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status=~\"403\" [$__range]))",
+          "legendFormat": "blocked",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status!~\"403\" | status!=\"\" [$__range]))",
+          "legendFormat": "passed",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "title": "Top Blocked IPs",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-reds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "yellow", "value": null },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (request_headers_X_Real_Ip) (count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status=~\"403\" [$__range])))",
+          "legendFormat": "{{request_headers_X_Real_Ip}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Traffic nach Dienst (Host)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 1,
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (request_host) (count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | request_host!=\"\" [5m]))",
+          "legendFormat": "{{request_host}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Response-Zeiten (P95)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 2 },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "quantile_over_time(0.95, {container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | unwrap duration [5m]) by (request_host)",
+          "legendFormat": "{{request_host}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "WAF-Regel-Alerts",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "loki", "uid": "" },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Time" },
+            "properties": [
+              { "id": "custom.hidden", "value": true }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [
+          { "desc": true, "displayName": "Value" }
+        ]
+      },
+      "transformations": [],
+      "targets": [
+        {
+          "expr": "sum by (msg) (count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.handlers.waf\" | msg=~\".*Coraza.*\" [$__range]))",
+          "legendFormat": "",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "HTTP Status-Codes",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "loki", "uid": "" },
+      "targets": [
+        {
+          "expr": "sum by (status) (count_over_time({container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status!=\"\" [$__range]))",
+          "legendFormat": "HTTP {{status}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "title": "Letzte geblockte Requests",
+      "type": "logs",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "loki", "uid": "" },
+      "options": {
+        "showTime": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "expr": "{container=\"opendesk_coraza\"} | json | logger=\"http.log.access.log0\" | status=~\"403\"",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["coraza", "waf", "security"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Coraza WAF",
+  "uid": "coraza-waf",
+  "version": 1
+}
